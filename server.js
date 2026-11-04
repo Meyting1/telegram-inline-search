@@ -42,44 +42,25 @@ app.post("/telegram-webhook", (req, res) => {
       .split("@")[0];
 
     if (command === "/start") {
-      const chatId = update.message.chat.id;
-
-      telegram("sendMessage", {
-        chat_id: chatId,
-        text:
-          "👋 Welcome to MoroorgarBot!\n\n" +
-          "🔎 Search the web directly in any Telegram chat.\n\n" +
-          "Just type:\n" +
-          "@Moroorgarbot followed by your search.\n\n" +
-          "Example:\n" +
-          "@Moroorgarbot Bitcoin\n\n" +
-          "Choose a result, then tap 📖 Read full article to read it here.",
-        reply_markup: {
-          inline_keyboard: [[
-            {
-              text: "🔎 Search here",
-              switch_inline_query_current_chat: ""
-            }
-          ]]
-        }
-      }).catch(err => {
-        console.error(
-          "Start message error:",
-          err.response?.data || err.message
-        );
-      });
+      showWelcome(update.message.chat.id);
     }
-  }
-
-  if (update.inline_query) {
-    answerInlineQuery(update.inline_query).catch(err => {
-      console.error("Inline error:", err.response?.data || err.message);
-    });
   }
 
   if (update.callback_query) {
     handleCallback(update.callback_query).catch(err => {
-      console.error("Callback error:", err.response?.data || err.message);
+      console.error(
+        "Callback error:",
+        err.response?.data || err.message
+      );
+    });
+  }
+
+  if (update.inline_query) {
+    answerInlineQuery(update.inline_query).catch(err => {
+      console.error(
+        "Inline error:",
+        err.response?.data || err.message
+      );
     });
   }
 });
@@ -92,6 +73,39 @@ async function telegram(method, data) {
   );
 
   return response.data;
+}
+
+async function showWelcome(chatId) {
+  await telegram("sendMessage", {
+    chat_id: chatId,
+    text:
+      "👋 سلام! به ربات مور و گر خوش اومدی.\n\n" +
+      "با این ربات می‌تونی مستقیماً داخل تلگرام جست‌وجو کنی " +
+      "و مطالب رو بدون خروج از تلگرام بخونی.\n\n" +
+      "لطفاً نوع جست‌وجوت رو انتخاب کن:",
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: "🔎 جستجوی وب",
+            switch_inline_query_current_chat: ""
+          }
+        ],
+        [
+          {
+            text: "🖼 جستجوی عکس‌ها (به‌زودی)",
+            callback_data: "coming:images"
+          }
+        ],
+        [
+          {
+            text: "🎬 جستجوی فیلم‌ها (به‌زودی)",
+            callback_data: "coming:videos"
+          }
+        ]
+      ]
+    }
+  });
 }
 
 async function searchWeb(query) {
@@ -147,11 +161,11 @@ async function answerInlineQuery(query) {
         results: [{
           type: "article",
           id: "start",
-          title: "Search the web",
-          description: "Type something to find websites.",
+          title: "جستجوی وب",
+          description: "عبارت مورد نظرت رو وارد کن.",
           input_message_content: {
             message_text:
-              "🔎 MoroorgarBot\nType something to search the web."
+              "🔎 مور و گر\nعبارت مورد نظرت رو برای جستجوی وب وارد کن."
           }
         }]
       });
@@ -166,6 +180,7 @@ async function answerInlineQuery(query) {
     const results = pages.slice(0, 8).map((page, index) => {
       const title = page.name || "Untitled page";
       const url = page.url || "";
+
       const description = (
         page.snippet || page.text || "No description available."
       ).trim();
@@ -174,11 +189,7 @@ async function answerInlineQuery(query) {
         return null;
       }
 
-      const id = saveArticle(
-        url,
-        title,
-        description
-      );
+      const id = saveArticle(url, title, description);
 
       return {
         type: "article",
@@ -206,10 +217,11 @@ async function answerInlineQuery(query) {
       results.push({
         type: "article",
         id: "empty",
-        title: "No results found",
-        description: "Try another search.",
+        title: "نتیجه‌ای پیدا نشد",
+        description: "عبارت دیگری رو امتحان کن.",
         input_message_content: {
-          message_text: "No results found. Try another search."
+          message_text:
+            "نتیجه‌ای پیدا نشد. لطفاً دوباره جست‌وجو کن."
         }
       });
     }
@@ -233,10 +245,11 @@ async function answerInlineQuery(query) {
       results: [{
         type: "article",
         id: "error",
-        title: "Search temporarily unavailable",
-        description: "Please try again later.",
+        title: "جست‌وجو موقتاً در دسترس نیست",
+        description: "لطفاً کمی بعد دوباره تلاش کن.",
         input_message_content: {
-          message_text: "Search is temporarily unavailable."
+          message_text:
+            "جست‌وجو موقتاً در دسترس نیست."
         }
       }]
     });
@@ -373,6 +386,20 @@ async function handleCallback(query) {
   const data = query.data || "";
 
   try {
+    if (data.startsWith("coming:")) {
+      const feature = data.split(":")[1];
+
+      const message = feature === "images"
+        ? "🖼 جستجوی عکس‌ها به‌زودی به ربات اضافه می‌شه!"
+        : "🎬 جستجوی فیلم‌ها به‌زودی به ربات اضافه می‌شه!";
+
+      return telegram("answerCallbackQuery", {
+        callback_query_id: query.id,
+        text: message,
+        show_alert: true
+      });
+    }
+
     if (data.startsWith("r:")) {
       const id = data.slice(2);
       const article = articles.get(id);
