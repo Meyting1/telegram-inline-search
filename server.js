@@ -17,6 +17,8 @@ const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 const articles = new Map();
 const imageCache = new Map();
+const chatModes = new Map();
+const chatImagePages = new Map();
 
 const IMAGE_PAGE_SIZE = 30;
 const VIDEO_PAGE_SIZE = 15;
@@ -41,11 +43,7 @@ app.post("/telegram-webhook", (req, res) => {
   const update = req.body;
 
   if (update.message?.text) {
-    const command = update.message.text.split(" ")[0].split("@")[0];
-
-    if (command === "/start") {
-      showWelcome(update.message.chat.id).catch(console.error);
-    }
+    processChatMessage(update.message).catch(console.error);
   }
 
   if (update.callback_query) {
@@ -67,28 +65,197 @@ async function telegram(method, data) {
 }
 
 async function showWelcome(chatId) {
+  chatModes.delete(chatId);
   await telegram("sendMessage", {
     chat_id: chatId,
     text:
-      "👋 سلام! به ربات مور و گر خوش اومدی.\n\n" +
-      "با این ربات می‌تونی مستقیماً داخل تلگرام جستجو کنی.\n\n" +
-      "لطفاً نوع جست‌وجوت رو انتخاب کن:",
+      "👋 سلام! به ربات مور و گر خوش اومدی.\\n\\n" +
+      "از منوی پایین نوع جست‌وجو رو انتخاب کن؛ بعد عبارتت رو بنویس تا نتایج همین‌جا نمایش داده بشن.",
     reply_markup: {
-      inline_keyboard: [
-        [{
-          text: "🔎 جستجوی وب",
-          switch_inline_query_current_chat: ""
-        }],
-        [{
-          text: "🖼 جستجوی عکس‌ها",
-          switch_inline_query_current_chat: "img "
-        }],
-        [{
-          text: "🎬 جستجوی ویدئوها",
-          switch_inline_query_current_chat: "vid "
-        }]
-      ]
+      keyboard: [
+        [{ text: "🔎 جستجوی وب" }, { text: "🖼 جستجوی عکس‌ها" }],
+        [{ text: "🎬 جستجوی ویدئوها" }]
+      ],
+      resize_keyboard: true,
+      is_persistent: true,
+      input_field_placeholder: "اول نوع جست‌وجو رو انتخاب کن"
     }
+  });
+}
+
+async function selectChatMode(chatId, mode) {
+  chatModes.set(chatId, mode);
+  const prompts = {
+    web: "🔎 عبارت جست‌وجوی وب رو بنویس:",
+    image: "🖼 عبارت جست‌وجوی عکس رو بنویس:",
+    video: "🎬 عبارت جست‌وجوی ویدئو رو بنویس:"
+  };
+  await telegram("sendMessage", {
+    chat_id: chatId,
+    text: prompts[mode],
+    reply_markup: {
+      keyboard: [
+        [{ text: "🔎 جستجوی وب" }, { text: "🖼 جستجوی عکس‌ها" }],
+        [{ text: "🎬 جستجوی ویدئوها" }]
+      ],
+      resize_keyboard: true,
+      is_persistent: true
+    }
+  });
+}
+
+async function processChatMessage(message) {
+  const chatId = message.chat.id;
+  const text = (message.text || "").trim();
+  const command = text.split(/\\s+/)[0].split("@")[0].toLowerCase();
+
+  if (command === "/start") return showWelcome(chatId);
+  if (command === "/web") return selectChatMode(chatId, "web");
+  if (command === "/img") return selectChatMode(chatId, "image");
+  if (command === "/vid") return selectChatMode(chatId, "video");
+
+  if (text === "🔎 جستجوی وب") return selectChatMode(chatId, "web");
+  if (text === "🖼 جستجوی عکس‌ها") return selectChatMode(chatId, "image");
+  if (text === "🎬 جستجوی ویدئوها") return selectChatMode(chatId, "video");
+
+  const mode = chatModes.get(chatId);
+  if (!mode) {
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "برای شروع، یکی از گزینه‌های منوی پایین رو انتخاب کن."
+    });
+    return;
+  }
+
+  if (!text || text.startsWith("/")) {
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "لطفاً عبارت جست‌وجو رو به صورت متن بفرست."
+    });
+    return;
+  }
+
+  await telegram("sendChatAction", {
+    chat_id: chatId,
+    action: mode === "image" ? "upload_photo" : "typing"
+  });
+
+  try {
+    if (mode === "web") {
+      const pages = await searchWeb(text);
+      const valid = pages.filter(p => /^https?:\\/\\//i.test(p.url || "")).slice(0, 8);
+      if (!valid.length) {
+        return telegram("sendMessage", {
+          chat_id: chatId,
+          text: "نتیجه‌ای پیدا نشد. عبارت دیگری رو امتحان کن."
+        });
+      }
+      for (let i = 0; i < valid.length; i++) {
+        const p = valid[i];
+        const title = p.name || "بدون عنوان";
+        const snippet = (p.snippet || p.text || "").trim().slice(0, 650);
+        await telegram("sendMessage", {
+          chat_id: chatId,
+          text: `🔎 ${i + 1}. ${title}\\n\\n${snippet}\\n\\n${p.url}`,
+          disable_web_page_preview: true
+        });
+      }
+      return;
+    }
+
+    if (mode === "image") {
+      const token = crypto.randomBytes(5).toString("hex");
+      chatImagePages.set(token, { chatId, query: text, page: 1 });
+      return sendChatImagePage(chatId, text, 1, token);
+    }
+
+    if (mode === "video") {
+      const translated = await translateVideoQuery(text);
+      let data = await fetchBothVideoSources(translated, 1, 1);
+      if (
+        data.firstData.results.length === 0 &&
+        data.secondData.results.length === 0 &&
+        translated.toLowerCase() !== text.toLowerCase()
+      ) {
+        data = await fetchBothVideoSources(text, 1, 1);
+      }
+
+      const videos = interleaveVideos(
+        data.firstData.results.map(v => ({
+          title: v.tags || "Video",
+          duration: v.duration,
+          url: v.pageURL || v.videos?.medium?.url || v.videos?.small?.url
+        })),
+        data.secondData.results.map(v => ({
+          title: v.title || "Video",
+          duration: v.duration,
+          url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : ""
+        }))
+      ).filter(v => /^https?:\\/\\//i.test(v.url || "")).slice(0, 12);
+
+      if (!videos.length) {
+        return telegram("sendMessage", {
+          chat_id: chatId,
+          text: "برای این عبارت ویدئویی پیدا نشد. عبارت دیگری رو امتحان کن."
+        });
+      }
+
+      for (let i = 0; i < videos.length; i++) {
+        const v = videos[i];
+        await telegram("sendMessage", {
+          chat_id: chatId,
+          text:
+            `🎬 ${i + 1}. ${String(v.title).slice(0, 220)}\\n` +
+            (v.duration ? `مدت: ${v.duration}\\n` : "") +
+            `\\n${v.url}`,
+          disable_web_page_preview: false
+        });
+      }
+    }
+  } catch (error) {
+    console.error("Chat search error:", error.response?.data || error.message);
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "جست‌وجو موقتاً ناموفق بود. لطفاً کمی بعد دوباره امتحان کن."
+    });
+  }
+}
+
+async function sendChatImagePage(chatId, query, page, token) {
+  const data = await searchImages(query, page);
+  const hits = (data.hits || []).filter(h => h.webformatURL).slice(0, 10);
+
+  if (!hits.length) {
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "عکس بیشتری برای این جست‌وجو پیدا نشد."
+    });
+    return;
+  }
+
+  const media = hits.map((hit, index) => ({
+    type: "photo",
+    media: hit.webformatURL,
+    ...(index === 0 ? {
+      caption: `🖼 ${(hit.tags || query).slice(0, 900)}\\nعکاس: ${hit.user || "نامشخص"}`
+    } : {})
+  }));
+
+  await telegram("sendMediaGroup", {
+    chat_id: chatId,
+    media
+  });
+
+  const hasMore = data.totalHits > page * 10;
+  await telegram("sendMessage", {
+    chat_id: chatId,
+    text: hasMore ? "برای دیدن عکس‌های بیشتر، دکمه زیر رو بزن." : "پایان نتایج این جست‌وجو.",
+    reply_markup: hasMore ? {
+      inline_keyboard: [[{
+        text: "عکس‌های بیشتر",
+        callback_data: `ci:${token}`
+      }]]
+    } : { inline_keyboard: [] }
   });
 }
 
@@ -606,6 +773,20 @@ async function handleCallback(query) {
   const data = query.data || "";
 
   try {
+    if (data.startsWith("ci:")) {
+      const token = data.slice(3);
+      const state = chatImagePages.get(token);
+      await telegram("answerCallbackQuery", { callback_query_id: query.id });
+      if (!state || state.chatId !== query.message?.chat?.id) return;
+      state.page += 1;
+      await telegram("editMessageReplyMarkup", {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+        reply_markup: { inline_keyboard: [] }
+      });
+      await sendChatImagePage(state.chatId, state.query, state.page, token);
+      return;
+    }
     if (data.startsWith("r:")) {
       const id = data.slice(2);
       const article = articles.get(id);
@@ -897,7 +1078,16 @@ async function startBot() {
     throw new Error(JSON.stringify(result));
   }
 
-  console.log("Telegram webhook successfully configured.");
+  await telegram("setMyCommands", {
+    commands: [
+      { command: "start", description: "نمایش منوی اصلی" },
+      { command: "web", description: "جست‌وجوی وب" },
+      { command: "img", description: "جست‌وجوی عکس‌ها" },
+      { command: "vid", description: "جست‌وجوی ویدئوها" }
+    ]
+  });
+
+  console.log("Telegram webhook and command menu successfully configured.");
 }
 
 app.listen(PORT, "0.0.0.0", () => {
