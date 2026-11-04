@@ -223,7 +223,7 @@ async function processChatMessage(message) {
 
 async function sendChatImagePage(chatId, query, page, token) {
   const data = await searchImages(query, page);
-  const hits = (data.hits || []).filter(h => h.webformatURL).slice(0, 10);
+  const hits = (data.hits || []).filter(h => h.webformatURL).slice(0, 30);
 
   if (!hits.length) {
     await telegram("sendMessage", {
@@ -233,20 +233,23 @@ async function sendChatImagePage(chatId, query, page, token) {
     return;
   }
 
-  const media = hits.map((hit, index) => ({
-    type: "photo",
-    media: hit.webformatURL,
-    ...(index === 0 ? {
-      caption: `🖼 ${(hit.tags || query).slice(0, 900)}\\nعکاس: ${hit.user || "نامشخص"}`
-    } : {})
-  }));
+  // Telegram allows up to 10 media items in each media group.
+  for (let start = 0; start < hits.length; start += 10) {
+    const media = hits.slice(start, start + 10).map((hit, index) => ({
+      type: "photo",
+      media: hit.webformatURL,
+      ...(start === 0 && index === 0 ? {
+        caption: `🖼 ${(hit.tags || query).slice(0, 900)}\\nعکاس: ${hit.user || "نامشخص"}`
+      } : {})
+    }));
 
-  await telegram("sendMediaGroup", {
-    chat_id: chatId,
-    media
-  });
+    await telegram("sendMediaGroup", {
+      chat_id: chatId,
+      media
+    });
+  }
 
-  const hasMore = data.totalHits > page * 10;
+  const hasMore = data.totalHits > page * 30;
   await telegram("sendMessage", {
     chat_id: chatId,
     text: hasMore ? "برای دیدن عکس‌های بیشتر، دکمه زیر رو بزن." : "پایان نتایج این جست‌وجو.",
