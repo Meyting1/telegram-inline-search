@@ -252,6 +252,15 @@ async function sendChatVideoPage(token, existingData = null) {
   ).filter(v => /^https?:\/\//i.test(v.url || "")).slice(0, CHAT_VIDEO_PAGE_SIZE * 2);
 
   if (!videos.length) {
+    await telegram("sendMessage", {
+      chat_id: state.chatId,
+      text: "برای این عبارت ویدئویی بیشتری پیدا نشد."
+    });
+    return;
+  }
+
+  for (let i = 0; i < videos.length; i++) {
+    const v = videos[i];
     const buttons = [[{ text: "▶️ تماشای ویدئو", url: v.url }]];
     if (/^https?:\/\//i.test(v.sourceUrl || "")) {
       buttons[0].push({ text: "مشاهده منبع", url: v.sourceUrl });
@@ -259,8 +268,8 @@ async function sendChatVideoPage(token, existingData = null) {
     await telegram("sendMessage", {
       chat_id: state.chatId,
       text:
-        `🎬 ${((page - 1) * CHAT_VIDEO_PAGE_SIZE * 2) + i + 1}. ${String(v.title).slice(0, 220)}\\n` +
-        (v.duration ? `مدت: ${v.duration}\\n` : ""),
+        `🎬 ${((page - 1) * CHAT_VIDEO_PAGE_SIZE * 2) + i + 1}. ${String(v.title).slice(0, 220)}\n` +
+        (v.duration ? `مدت: ${v.duration}\n` : ""),
       reply_markup: { inline_keyboard: buttons },
       disable_web_page_preview: true
     });
@@ -277,7 +286,6 @@ async function sendChatVideoPage(token, existingData = null) {
     } : { inline_keyboard: [] }
   });
 }
-
 async function sendChatImagePage(chatId, query, page, token) {
   const data = await searchImages(query, page);
   const hits = (data.hits || []).filter(h => h.webformatURL).slice(0, 30);
