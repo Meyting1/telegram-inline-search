@@ -69,7 +69,7 @@ async function showWelcome(chatId) {
   await telegram("sendMessage", {
     chat_id: chatId,
     text:
-      "👋 سلام! به ربات مور و گر خوش اومدی.\\n\\n" +
+      "👋 سلام! به ربات مور و گر خوش اومدی.\n\n" +
       "از منوی پایین نوع جست‌وجو رو انتخاب کن؛ بعد عبارتت رو بنویس تا نتایج همین‌جا نمایش داده بشن.",
     reply_markup: {
       keyboard: [
@@ -107,7 +107,7 @@ async function selectChatMode(chatId, mode) {
 async function processChatMessage(message) {
   const chatId = message.chat.id;
   const text = (message.text || "").trim();
-  const command = text.split(/\\s+/)[0].split("@")[0].toLowerCase();
+  const command = text.split(/\s+/)[0].split("@")[0].toLowerCase();
 
   if (command === "/start") return showWelcome(chatId);
   if (command === "/web") return selectChatMode(chatId, "web");
@@ -143,7 +143,7 @@ async function processChatMessage(message) {
   try {
     if (mode === "web") {
       const pages = await searchWeb(text);
-      const valid = pages.filter(p => /^https?:\\/\\//i.test(p.url || "")).slice(0, 8);
+      const valid = pages.filter(p => /^https?:\/\//i.test(p.url || "")).slice(0, 8);
       if (!valid.length) {
         return telegram("sendMessage", {
           chat_id: chatId,
@@ -156,7 +156,7 @@ async function processChatMessage(message) {
         const snippet = (p.snippet || p.text || "").trim().slice(0, 650);
         await telegram("sendMessage", {
           chat_id: chatId,
-          text: `🔎 ${i + 1}. ${title}\\n\\n${snippet}\\n\\n${p.url}`,
+          text: `🔎 ${i + 1}. ${title}\n\n${snippet}\n\n${p.url}`,
           disable_web_page_preview: true
         });
       }
@@ -191,7 +191,7 @@ async function processChatMessage(message) {
           duration: v.duration,
           url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : ""
         }))
-      ).filter(v => /^https?:\\/\\//i.test(v.url || "")).slice(0, 12);
+      ).filter(v => /^https?:\/\//i.test(v.url || "")).slice(0, 12);
 
       if (!videos.length) {
         return telegram("sendMessage", {
@@ -205,9 +205,9 @@ async function processChatMessage(message) {
         await telegram("sendMessage", {
           chat_id: chatId,
           text:
-            `🎬 ${i + 1}. ${String(v.title).slice(0, 220)}\\n` +
-            (v.duration ? `مدت: ${v.duration}\\n` : "") +
-            `\\n${v.url}`,
+            `🎬 ${i + 1}. ${String(v.title).slice(0, 220)}\n` +
+            (v.duration ? `مدت: ${v.duration}\n` : "") +
+            `\n${v.url}`,
           disable_web_page_preview: false
         });
       }
@@ -239,7 +239,7 @@ async function sendChatImagePage(chatId, query, page, token) {
       type: "photo",
       media: hit.webformatURL,
       ...(start === 0 && index === 0 ? {
-        caption: `🖼 ${(hit.tags || query).slice(0, 900)}\\nعکاس: ${hit.user || "نامشخص"}`
+        caption: `🖼 ${(hit.tags || query).slice(0, 900)}\nعکاس: ${hit.user || "نامشخص"}`
       } : {})
     }));
 
