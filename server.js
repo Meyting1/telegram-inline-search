@@ -1,4 +1,3 @@
-
 const express = require("express");
 const axios = require("axios");
 const cheerio = require("cheerio");
@@ -36,6 +35,41 @@ app.post("/telegram-webhook", (req, res) => {
   res.sendStatus(200);
 
   const update = req.body;
+
+  if (update.message?.text) {
+    const command = update.message.text
+      .split(" ")[0]
+      .split("@")[0];
+
+    if (command === "/start") {
+      const chatId = update.message.chat.id;
+
+      telegram("sendMessage", {
+        chat_id: chatId,
+        text:
+          "👋 Welcome to MoroorgarBot!\n\n" +
+          "🔎 Search the web directly in any Telegram chat.\n\n" +
+          "Just type:\n" +
+          "@Moroorgarbot followed by your search.\n\n" +
+          "Example:\n" +
+          "@Moroorgarbot Bitcoin\n\n" +
+          "Choose a result, then tap 📖 Read full article to read it here.",
+        reply_markup: {
+          inline_keyboard: [[
+            {
+              text: "🔎 Search here",
+              switch_inline_query_current_chat: ""
+            }
+          ]]
+        }
+      }).catch(err => {
+        console.error(
+          "Start message error:",
+          err.response?.data || err.message
+        );
+      });
+    }
+  }
 
   if (update.inline_query) {
     answerInlineQuery(update.inline_query).catch(err => {
@@ -116,7 +150,8 @@ async function answerInlineQuery(query) {
           title: "Search the web",
           description: "Type something to find websites.",
           input_message_content: {
-            message_text: "🔎 MoroorgarBot\nType something to search the web."
+            message_text:
+              "🔎 MoroorgarBot\nType something to search the web."
           }
         }]
       });
@@ -226,7 +261,9 @@ async function extractArticle(url) {
 
   const $ = cheerio.load(response.data);
 
-  $("script, style, nav, footer, header, aside, iframe, form, noscript, svg").remove();
+  $(
+    "script, style, nav, footer, header, aside, iframe, form, noscript, svg"
+  ).remove();
 
   const title =
     $("meta[property='og:title']").attr("content") ||
@@ -455,7 +492,11 @@ async function startBot() {
   const result = await telegram("setWebhook", {
     url: webhookUrl,
     secret_token: WEBHOOK_SECRET,
-    allowed_updates: ["inline_query", "callback_query"],
+    allowed_updates: [
+      "message",
+      "inline_query",
+      "callback_query"
+    ],
     drop_pending_updates: true
   });
 
