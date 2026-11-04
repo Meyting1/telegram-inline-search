@@ -19,6 +19,8 @@ const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const articles = new Map();
 const imageCache = new Map();
 
+const IMAGE_PAGE_SIZE = 30;
+
 app.get("/", (req, res) => {
   res.send("MoroorgarBot is running!");
 });
@@ -138,12 +140,17 @@ async function searchWeb(query) {
   return payload.data?.webPages?.value || [];
 }
 
-async function searchImages(query) {
-  const cacheKey = query.toLowerCase().trim();
+async function searchImages(query, page = 1) {
+  const cacheKey =
+    `${query.toLowerCase().trim()}:page:${page}`;
+
   const cached = imageCache.get(cacheKey);
 
-  if (cached && Date.now() - cached.time < 23 * 60 * 60 * 1000) {
-    return cached.hits;
+  if (
+    cached &&
+    Date.now() - cached.time < 23 * 60 * 60 * 1000
+  ) {
+    return cached.data;
   }
 
   const response = await axios.get(
@@ -153,18 +160,22 @@ async function searchImages(query) {
         key: PIXABAY_KEY,
         q: query.slice(0, 100),
         image_type: "photo",
-        safesearch: true,
+        safesearch: false,
         order: "popular",
-        per_page: 10
+        per_page: IMAGE_PAGE_SIZE,
+        page
       },
       timeout: 20000
     }
   );
 
-  const hits = response.data.hits || [];
+  const data = {
+    hits: response.data.hits || [],
+    totalHits: response.data.totalHits || 0
+  };
 
   imageCache.set(cacheKey, {
-    hits,
+    data,
     time: Date.now()
   });
 
@@ -172,7 +183,7 @@ async function searchImages(query) {
     imageCache.delete(imageCache.keys().next().value);
   }
 
-  return hits;
+  return data;
 }
 
 function saveArticle(url, title, summary) {
@@ -217,13 +228,24 @@ async function answerInlineQuery(query) {
         });
       }
 
-      console.log("Image searching:", imageQuery);
+      const page = Math.max(
+        1,
+        Math.min(100, Number(query.offset) || 1)
+      );
 
-      const hits = await searchImages(imageQuery);
+      console.log(
+        "Image searching:",
+        imageQuery,
+        "Page:",
+        page
+      );
+
+      const imageData = await searchImages(imageQuery, page);
+      const hits = imageData.hits;
 
       const results = hits
         .filter(hit => hit.webformatURL && hit.previewURL)
-        .slice(0, 10)
+        .slice(0, IMAGE_PAGE_SIZE)
         .map(hit => ({
           type: "photo",
           id: String(hit.id),
@@ -260,12 +282,21 @@ async function answerInlineQuery(query) {
         });
       }
 
-      return telegram("answerInlineQuery", {
+      const hasMore =
+        imageData.totalHits > page * IMAGE_PAGE_SIZE;
+
+      const answer = {
         inline_query_id: query.id,
         results,
         cache_time: 10,
         is_personal: true
-      });
+      };
+
+      if (hasMore) {
+        answer.next_offset = String(page + 1);
+      }
+
+      return telegram("answerInlineQuery", answer);
     }
 
     // WEB SEARCH
