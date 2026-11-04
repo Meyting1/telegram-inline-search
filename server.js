@@ -20,6 +20,7 @@ const articles = new Map();
 const imageCache = new Map();
 
 const IMAGE_PAGE_SIZE = 30;
+const VIDEO_PAGE_SIZE = 30;
 
 app.get("/", (req, res) => {
   res.send("MoroorgarBot is running!");
@@ -89,6 +90,7 @@ async function showWelcome(chatId) {
       "👋 سلام! به ربات مور و گر خوش اومدی.\n\n" +
       "با این ربات می‌تونی مستقیماً داخل تلگرام جست‌وجو کنی " +
       "و مطالب رو بدون خروج از تلگرام بخونی.\n\n" +
+      "بخش ویدئو مخصوص افراد بالای ۱۸ سال است.\n\n" +
       "لطفاً نوع جست‌وجوت رو انتخاب کن:",
     reply_markup: {
       inline_keyboard: [
@@ -106,8 +108,8 @@ async function showWelcome(chatId) {
         ],
         [
           {
-            text: "🎬 جستجوی فیلم‌ها (به‌زودی)",
-            callback_data: "coming:videos"
+            text: "🔞 جستجوی فیلم‌ها (۱۸+)",
+            switch_inline_query_current_chat: "vid "
           }
         ]
       ]
@@ -186,6 +188,66 @@ async function searchImages(query, page = 1) {
   return data;
 }
 
+// Translate Persian search terms into English
+async function translateVideoQuery(query) {
+  try {
+    const response = await axios.get(
+      "https://api.mymemory.translated.net/get",
+      {
+        params: {
+          q: query.slice(0, 400),
+          langpair: "fa|en"
+        },
+        timeout: 15000
+      }
+    );
+
+    const translated =
+      response.data?.responseData?.translatedText?.trim();
+
+    if (
+      Number(response.data?.responseStatus) === 200 &&
+      translated &&
+      translated.length > 0
+    ) {
+      console.log("Video translation:", translated);
+      return translated;
+    }
+
+    console.log("Translation unavailable; using original query.");
+    return query;
+
+  } catch (error) {
+    console.error("Translation error:", error.message);
+    return query;
+  }
+}
+
+// Search AdultEmbed videos
+async function searchVideos(query, page = 1) {
+  const response = await axios.get(
+    "https://adultembed.com/api/database/browse/",
+    {
+      params: {
+        search: query.slice(0, 150),
+        orientation: "all",
+        sort: "popular",
+        page,
+        page_size: VIDEO_PAGE_SIZE
+      },
+      headers: {
+        "X-Site-URL": PUBLIC_URL
+      },
+      timeout: 25000
+    }
+  );
+
+  return {
+    results: response.data.results || [],
+    count: Number(response.data.count || 0)
+  };
+}
+
 function saveArticle(url, title, summary) {
   const id = crypto.randomBytes(6).toString("hex");
 
@@ -233,17 +295,11 @@ async function answerInlineQuery(query) {
         Math.min(100, Number(query.offset) || 1)
       );
 
-      console.log(
-        "Image searching:",
-        imageQuery,
-        "Page:",
-        page
-      );
+      console.log("Image searching:", imageQuery, "Page:", page);
 
       const imageData = await searchImages(imageQuery, page);
-      const hits = imageData.hits;
 
-      const results = hits
+      const results = imageData.hits
         .filter(hit => hit.webformatURL && hit.previewURL)
         .slice(0, IMAGE_PAGE_SIZE)
         .map(hit => ({
@@ -282,8 +338,122 @@ async function answerInlineQuery(query) {
         });
       }
 
-      const hasMore =
-        imageData.totalHits > page * IMAGE_PAGE_SIZE;
+      const answer = {
+        inline_query_id: query.id,
+        results,
+        cache_time: 10,
+        is_personal: true
+      };
+
+      if (imageData.totalHits > page * IMAGE_PAGE_SIZE) {
+        answer.next_offset = String(page + 1);
+      }
+
+      return telegram("answerInlineQuery", answer);
+    }
+
+    // VIDEO SEARCH
+    if (/^vid(?:\s|$)/i.test(text)) {
+      const videoQuery = text.replace(/^vid\s*/i, "").trim();
+
+      if (!videoQuery) {
+        return telegram("answerInlineQuery", {
+          inline_query_id: query.id,
+          cache_time: 1,
+          results: [{
+            type: "article",
+            id: "video-help",
+            title: "🔞 جستجوی فیلم‌ها",
+            description: "عبارت مورد نظرت رو بعد از vid وارد کن.",
+            input_message_content: {
+              message_text:
+                "🎬 برای جستجوی ویدئو، عبارت مورد نظرت رو بعد از vid وارد کن."
+            }
+          }]
+        });
+      }
+
+      const page = Math.max(
+        1,
+        Math.min(50, Number(query.offset) || 1)
+      );
+
+      console.log(
+        "Video searching:",
+        videoQuery,
+        "Page:",
+        page
+      );
+
+      // Translate Persian query
+      let searchTerm = await translateVideoQuery(videoQuery);
+
+      let videoData = await searchVideos(searchTerm, page);
+
+      // If translation gives no results, retry original query
+      if (
+        videoData.results.length === 0 &&
+        searchTerm.toLowerCase() !== videoQuery.toLowerCase()
+      ) {
+        console.log("Retrying video search with original query.");
+        searchTerm = videoQuery;
+        videoData = await searchVideos(searchTerm, page);
+      }
+
+      const results = videoData.results
+        .slice(0, VIDEO_PAGE_SIZE)
+        .filter(video => video.id)
+        .map(video => {
+          const playerUrl =
+            `https://adultembed.com/player/embed/${video.id}/`;
+
+          const title = video.title || "Untitled video";
+          const duration = video.duration || "نامشخص";
+          const thumbnail = video.thumbnail || "";
+
+          const result = {
+            type: "article",
+            id: `video-${video.id}`,
+            title: `🎬 ${title}`.slice(0, 200),
+            description:
+              `⏱ مدت: ${duration} | AdultEmbed`,
+            input_message_content: {
+              message_text:
+                `🎬 ${title}\n\n` +
+                `⏱ مدت ویدئو: ${duration}\n\n` +
+                "برای تماشای ویدئو، دکمه زیر رو بزن."
+            },
+            reply_markup: {
+              inline_keyboard: [[
+                {
+                  text: "▶️ تماشای ویدئو",
+                  url: playerUrl
+                }
+              ]]
+            }
+          };
+
+          if (/^https?:\/\//i.test(thumbnail)) {
+            result.thumbnail_url = thumbnail;
+            result.thumbnail_width = 320;
+            result.thumbnail_height = 180;
+          }
+
+          return result;
+        });
+
+      if (results.length === 0) {
+        results.push({
+          type: "article",
+          id: "no-videos",
+          title: "ویدئویی پیدا نشد",
+          description: "عبارت دیگری رو امتحان کن.",
+          input_message_content: {
+            message_text:
+              "برای این عبارت ویدئویی پیدا نشد. لطفاً عبارت دیگری رو امتحان کن."
+          }
+        });
+      }
 
       const answer = {
         inline_query_id: query.id,
@@ -292,7 +462,7 @@ async function answerInlineQuery(query) {
         is_personal: true
       };
 
-      if (hasMore) {
+      if (videoData.count > page * VIDEO_PAGE_SIZE) {
         answer.next_offset = String(page + 1);
       }
 
@@ -536,7 +706,7 @@ async function handleCallback(query) {
       const feature = data.split(":")[1];
 
       const message = feature === "videos"
-        ? "🎬 جستجوی فیلم‌ها به‌زودی به ربات اضافه می‌شه!"
+        ? "🎬 جستجوی فیلم‌ها به‌زودی اضافه می‌شه!"
         : "این قابلیت هنوز آماده نشده است.";
 
       return telegram("answerCallbackQuery", {
