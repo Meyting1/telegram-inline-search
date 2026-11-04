@@ -146,7 +146,11 @@ async function processChatMessage(message) {
 
   try {
     if (mode === "web") {
-      const pages = await searchWeb(text, 50);
+      let searchTerm = await translateSearchQuery(text);
+      let pages = await searchWeb(searchTerm, 50);
+      if (!pages.length && searchTerm.toLowerCase() !== text.toLowerCase()) {
+        pages = await searchWeb(text, 50);
+      }
       const valid = pages.filter(p => /^https?:\/\//i.test(p.url || ""));
       if (!valid.length) {
         return telegram("sendMessage", {
@@ -160,13 +164,22 @@ async function processChatMessage(message) {
     }
 
     if (mode === "image") {
+      let searchTerm = await translateSearchQuery(text);
+      let imageData = await searchImages(searchTerm, 1);
+      if (
+        (!imageData.hits || imageData.hits.length === 0) &&
+        searchTerm.toLowerCase() !== text.toLowerCase()
+      ) {
+        searchTerm = text;
+        imageData = await searchImages(searchTerm, 1);
+      }
       const token = crypto.randomBytes(5).toString("hex");
-      chatImagePages.set(token, { chatId, query: text, page: 1 });
-      return sendChatImagePage(chatId, text, 1, token);
+      chatImagePages.set(token, { chatId, query: searchTerm, page: 1 });
+      return sendChatImagePage(chatId, searchTerm, 1, token);
     }
 
     if (mode === "video") {
-      let query = await translateVideoQuery(text);
+      let query = await translateSearchQuery(text);
       let data = await fetchBothVideoSources(query, 1, 1, CHAT_VIDEO_PAGE_SIZE);
       if (
         data.firstData.results.length === 0 &&
@@ -372,7 +385,7 @@ async function searchImages(query, page = 1) {
 // ---------------- VIDEO SEARCH ----------------
 
 // Translate Persian queries to English when possible.
-async function translateVideoQuery(query) {
+async function translateSearchQuery(query) {
   try {
     const response = await axios.get(
       "https://api.mymemory.translated.net/get",
@@ -616,7 +629,7 @@ async function answerVideoInlineQuery(query, text) {
   const { firstPage, secondPage } =
     parseVideoOffset(query.offset);
 
-  const searchTerm = await translateVideoQuery(videoQuery);
+  const searchTerm = await translateSearchQuery(videoQuery);
 
   let data = await fetchBothVideoSources(
     searchTerm,
@@ -971,7 +984,15 @@ async function answerInlineQuery(query) {
         Math.min(100, Number(query.offset) || 1)
       );
 
-      const imageData = await searchImages(imageQuery, page);
+      let translatedQuery = await translateSearchQuery(imageQuery);
+      let imageData = await searchImages(translatedQuery, page);
+      if (
+        (!imageData.hits || imageData.hits.length === 0) &&
+        translatedQuery.toLowerCase() !== imageQuery.toLowerCase()
+      ) {
+        translatedQuery = imageQuery;
+        imageData = await searchImages(translatedQuery, page);
+      }
 
       const results = imageData.hits
         .filter(hit => hit.webformatURL && hit.previewURL)
@@ -1047,7 +1068,11 @@ async function answerInlineQuery(query) {
       });
     }
 
-    const pages = await searchWeb(text);
+    let searchTerm = await translateSearchQuery(text);
+    let pages = await searchWeb(searchTerm);
+    if (!pages.length && searchTerm.toLowerCase() !== text.toLowerCase()) {
+      pages = await searchWeb(text);
+    }
 
     const results = pages.slice(0, 8).map((page, index) => {
       const title = page.name || "Untitled page";
