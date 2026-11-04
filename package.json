@@ -1,13 +1,14 @@
 {
   "name": "moroorgar-inline-search",
-  "version": "1.0.0",
-  "description": "Telegram inline web search bot",
+  "version": "1.1.0",
+  "description": "Telegram inline web search bot with article reader",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "axios": "^1.7.9",
+    "cheerio": "^1.0.0",
     "express": "^4.21.2"
   }
 }
