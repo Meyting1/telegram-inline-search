@@ -5,9 +5,11 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const LANGSEARCH_KEY = process.env.LANGSEARCH_API_KEY;
+const PUBLIC_URL = process.env.PUBLIC_URL;
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
@@ -19,11 +21,30 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, bot: "MoroorgarBot" });
 });
 
+app.post("/telegram-webhook", async (req, res) => {
+  if (
+    req.headers["x-telegram-bot-api-secret-token"] !==
+    WEBHOOK_SECRET
+  ) {
+    return res.sendStatus(403);
+  }
+
+  res.sendStatus(200);
+
+  const update = req.body;
+
+  if (update.inline_query) {
+    answerInlineQuery(update.inline_query).catch(err => {
+      console.error("Inline error:", err.message);
+    });
+  }
+});
+
 async function telegram(method, data) {
   const response = await axios.post(
     `${TELEGRAM_API}/${method}`,
     data,
-    { timeout: 10000 }
+    { timeout: 15000 }
   );
   return response.data;
 }
@@ -33,15 +54,14 @@ async function searchWeb(query) {
     "https://api.langsearch.com/v1/web-search",
     {
       query,
-      count: 8,
-      summary: true
+      count: 8
     },
     {
       headers: {
         Authorization: `Bearer ${LANGSEARCH_KEY}`,
         "Content-Type": "application/json"
       },
-      timeout: 8000
+      timeout: 25000
     }
   );
 
@@ -57,24 +77,24 @@ async function searchWeb(query) {
 async function answerInlineQuery(query) {
   const text = query.query.trim();
 
-  if (!text) {
-    return telegram("answerInlineQuery", {
-      inline_query_id: query.id,
-      cache_time: 1,
-      results: [{
-        type: "article",
-        id: "start",
-        title: "Search the web",
-        description: "Type something after @Moroorgarbot",
-        input_message_content: {
-          message_text:
-            "🔎 MoroorgarBot\n\nType a search term after @Moroorgarbot."
-        }
-      }]
-    });
-  }
-
   try {
+    if (!text) {
+      return telegram("answerInlineQuery", {
+        inline_query_id: query.id,
+        cache_time: 1,
+        results: [{
+          type: "article",
+          id: "start",
+          title: "Search the web",
+          description: "Type something to find websites.",
+          input_message_content: {
+            message_text:
+              "🔎 MoroorgarBot\nSearch the web by typing a query."
+          }
+        }]
+      });
+    }
+
     const pages = await searchWeb(text);
 
     const results = pages.slice(0, 8).map((page, index) => {
@@ -87,11 +107,9 @@ async function answerInlineQuery(query) {
         id: String(index + 1),
         title: title.slice(0, 200),
         description: description.slice(0, 180),
-        url: url,
         input_message_content: {
           message_text:
-            `🔎 ${title}\n\n${description.slice(0, 700)}\n\n${url}`,
-          disable_web_page_preview: false
+            `🔎 ${title}\n\n${description.slice(0, 700)}\n\n${url}`
         }
       };
     });
@@ -101,9 +119,9 @@ async function answerInlineQuery(query) {
         type: "article",
         id: "empty",
         title: "No results found",
-        description: "Try another search term.",
+        description: "Try another search.",
         input_message_content: {
-          message_text: "No search results found. Try another query."
+          message_text: "No results found. Try another search."
         }
       });
     }
@@ -128,58 +146,47 @@ async function answerInlineQuery(query) {
         type: "article",
         id: "error",
         title: "Search temporarily unavailable",
-        description: "Please try again in a moment.",
+        description: "Please try again later.",
         input_message_content: {
-          message_text:
-            "Sorry, search is temporarily unavailable. Please try again."
+          message_text: "Search is temporarily unavailable."
         }
       }]
     });
   }
 }
 
-let offset = 0;
-let running = true;
-
-async function pollTelegram() {
-  while (running) {
-    try {
-      const response = await telegram("getUpdates", {
-        offset,
-        timeout: 30,
-        allowed_updates: ["inline_query"]
-      });
-
-      if (!response.ok) continue;
-
-      for (const update of response.result) {
-        offset = update.update_id + 1;
-
-        if (update.inline_query) {
-          answerInlineQuery(update.inline_query).catch(error => {
-            console.error("Inline error:", error.message);
-          });
-        }
-      }
-    } catch (error) {
-      console.error("Telegram polling error:", error.message);
-      await new Promise(resolve => setTimeout(resolve, 3000));
-    }
+async function startBot() {
+  if (
+    !BOT_TOKEN ||
+    !LANGSEARCH_KEY ||
+    !PUBLIC_URL ||
+    !WEBHOOK_SECRET
+  ) {
+    console.error("Missing environment variables!");
+    process.exit(1);
   }
+
+  const webhookUrl =
+    `${PUBLIC_URL.replace(/\/$/, "")}/telegram-webhook`;
+
+  const result = await telegram("setWebhook", {
+    url: webhookUrl,
+    secret_token: WEBHOOK_SECRET,
+    allowed_updates: ["inline_query"],
+    drop_pending_updates: true
+  });
+
+  if (!result.ok) {
+    throw new Error("Telegram webhook setup failed");
+  }
+
+  console.log("Telegram webhook successfully configured.");
 }
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`MoroorgarBot server running on port ${PORT}`);
+  console.log(`MoroorgarBot running on port ${PORT}`);
 
-  if (!BOT_TOKEN || !LANGSEARCH_KEY) {
-    console.error("Missing required environment variables!");
-    return;
-  }
-
-  pollTelegram();
-});
-
-process.on("SIGTERM", () => {
-  running = false;
-  process.exit(0);
+  startBot().catch(error => {
+    console.error("Startup error:", error.message);
+  });
 });
