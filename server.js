@@ -35,7 +35,7 @@ app.post("/telegram-webhook", async (req, res) => {
 
   if (update.inline_query) {
     answerInlineQuery(update.inline_query).catch(err => {
-      console.error("Inline error:", err.message);
+      console.error("Inline error:", err.response?.data || err.message);
     });
   }
 });
@@ -46,6 +46,7 @@ async function telegram(method, data) {
     data,
     { timeout: 15000 }
   );
+
   return response.data;
 }
 
@@ -95,7 +96,11 @@ async function answerInlineQuery(query) {
       });
     }
 
+    console.log("Searching:", text);
+
     const pages = await searchWeb(text);
+
+    console.log("Search results:", pages.length);
 
     const results = pages.slice(0, 8).map((page, index) => {
       const title = page.name || "Untitled page";
@@ -169,6 +174,8 @@ async function startBot() {
   const webhookUrl =
     `${PUBLIC_URL.replace(/\/$/, "")}/telegram-webhook`;
 
+  console.log("Setting webhook:", webhookUrl);
+
   const result = await telegram("setWebhook", {
     url: webhookUrl,
     secret_token: WEBHOOK_SECRET,
@@ -177,7 +184,7 @@ async function startBot() {
   });
 
   if (!result.ok) {
-    throw new Error("Telegram webhook setup failed");
+    throw new Error(JSON.stringify(result));
   }
 
   console.log("Telegram webhook successfully configured.");
@@ -187,6 +194,9 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`MoroorgarBot running on port ${PORT}`);
 
   startBot().catch(error => {
-    console.error("Startup error:", error.message);
+    console.error(
+      "Startup error:",
+      error.response?.data || error.message
+    );
   });
 });
