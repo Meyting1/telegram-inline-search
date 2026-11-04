@@ -19,9 +19,13 @@ const articles = new Map();
 const imageCache = new Map();
 const chatModes = new Map();
 const chatImagePages = new Map();
+const chatWebPages = new Map();
+const chatVideoPages = new Map();
 
 const IMAGE_PAGE_SIZE = 30;
 const VIDEO_PAGE_SIZE = 15;
+const CHAT_VIDEO_PAGE_SIZE = 6;
+const CHAT_WEB_PAGE_SIZE = 8;
 
 app.get("/", (req, res) => {
   res.send("MoroorgarBot is running!");
@@ -142,25 +146,17 @@ async function processChatMessage(message) {
 
   try {
     if (mode === "web") {
-      const pages = await searchWeb(text);
-      const valid = pages.filter(p => /^https?:\/\//i.test(p.url || "")).slice(0, 8);
+      const pages = await searchWeb(text, 50);
+      const valid = pages.filter(p => /^https?:\/\//i.test(p.url || ""));
       if (!valid.length) {
         return telegram("sendMessage", {
           chat_id: chatId,
           text: "نتیجه‌ای پیدا نشد. عبارت دیگری رو امتحان کن."
         });
       }
-      for (let i = 0; i < valid.length; i++) {
-        const p = valid[i];
-        const title = p.name || "بدون عنوان";
-        const snippet = (p.snippet || p.text || "").trim().slice(0, 650);
-        await telegram("sendMessage", {
-          chat_id: chatId,
-          text: `🔎 ${i + 1}. ${title}\n\n${snippet}\n\n${p.url}`,
-          disable_web_page_preview: true
-        });
-      }
-      return;
+      const token = crypto.randomBytes(5).toString("hex");
+      chatWebPages.set(token, { chatId, results: valid, page: 0 });
+      return sendChatWebPage(token);
     }
 
     if (mode === "image") {
@@ -170,47 +166,19 @@ async function processChatMessage(message) {
     }
 
     if (mode === "video") {
-      const translated = await translateVideoQuery(text);
-      let data = await fetchBothVideoSources(translated, 1, 1);
+      let query = await translateVideoQuery(text);
+      let data = await fetchBothVideoSources(query, 1, 1, CHAT_VIDEO_PAGE_SIZE);
       if (
         data.firstData.results.length === 0 &&
         data.secondData.results.length === 0 &&
-        translated.toLowerCase() !== text.toLowerCase()
+        query.toLowerCase() !== text.toLowerCase()
       ) {
-        data = await fetchBothVideoSources(text, 1, 1);
+        query = text;
+        data = await fetchBothVideoSources(query, 1, 1, CHAT_VIDEO_PAGE_SIZE);
       }
-
-      const videos = interleaveVideos(
-        data.firstData.results.map(v => ({
-          title: v.tags || "Video",
-          duration: v.duration,
-          url: v.pageURL || v.videos?.medium?.url || v.videos?.small?.url
-        })),
-        data.secondData.results.map(v => ({
-          title: v.title || "Video",
-          duration: v.duration,
-          url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : ""
-        }))
-      ).filter(v => /^https?:\/\//i.test(v.url || "")).slice(0, 12);
-
-      if (!videos.length) {
-        return telegram("sendMessage", {
-          chat_id: chatId,
-          text: "برای این عبارت ویدئویی پیدا نشد. عبارت دیگری رو امتحان کن."
-        });
-      }
-
-      for (let i = 0; i < videos.length; i++) {
-        const v = videos[i];
-        await telegram("sendMessage", {
-          chat_id: chatId,
-          text:
-            `🎬 ${i + 1}. ${String(v.title).slice(0, 220)}\n` +
-            (v.duration ? `مدت: ${v.duration}\n` : "") +
-            `\n${v.url}`,
-          disable_web_page_preview: false
-        });
-      }
+      const token = crypto.randomBytes(5).toString("hex");
+      chatVideoPages.set(token, { chatId, query, page: 1 });
+      return sendChatVideoPage(token, data);
     }
   } catch (error) {
     console.error("Chat search error:", error.response?.data || error.message);
@@ -219,6 +187,85 @@ async function processChatMessage(message) {
       text: "جست‌وجو موقتاً ناموفق بود. لطفاً کمی بعد دوباره امتحان کن."
     });
   }
+}
+
+
+async function sendChatWebPage(token) {
+  const state = chatWebPages.get(token);
+  if (!state) return;
+  const start = state.page * CHAT_WEB_PAGE_SIZE;
+  const batch = state.results.slice(start, start + CHAT_WEB_PAGE_SIZE);
+  for (let i = 0; i < batch.length; i++) {
+    const p = batch[i];
+    const title = p.name || "بدون عنوان";
+    const snippet = (p.snippet || p.text || "").trim().slice(0, 650);
+    await telegram("sendMessage", {
+      chat_id: state.chatId,
+      text: `🔎 ${start + i + 1}. ${title}\\n\\n${snippet}\\n\\n${p.url}`,
+      disable_web_page_preview: true
+    });
+  }
+  state.page += 1;
+  const hasMore = state.page * CHAT_WEB_PAGE_SIZE < state.results.length;
+  await telegram("sendMessage", {
+    chat_id: state.chatId,
+    text: hasMore ? "برای دیدن نتایج بیشتر، دکمه زیر رو بزن." : "پایان نتایج این جست‌وجو.",
+    reply_markup: hasMore ? {
+      inline_keyboard: [[{ text: "نتایج بیشتر", callback_data: `cw:${token}` }]]
+    } : { inline_keyboard: [] }
+  });
+}
+
+async function sendChatVideoPage(token, existingData = null) {
+  const state = chatVideoPages.get(token);
+  if (!state) return;
+  const page = state.page;
+  const data = existingData || await fetchBothVideoSources(
+    state.query, page, page, CHAT_VIDEO_PAGE_SIZE
+  );
+  const videos = interleaveVideos(
+    data.firstData.results.map(v => ({
+      title: v.tags || "Video",
+      duration: v.duration,
+      url: v.pageURL || v.videos?.medium?.url || v.videos?.small?.url
+    })),
+    data.secondData.results.map(v => ({
+      title: v.title || "Video",
+      duration: v.duration,
+      url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : ""
+    }))
+  ).filter(v => /^https?:\/\//i.test(v.url || "")).slice(0, CHAT_VIDEO_PAGE_SIZE * 2);
+
+  if (!videos.length) {
+    await telegram("sendMessage", {
+      chat_id: state.chatId,
+      text: "برای این عبارت ویدئویی بیشتری پیدا نشد."
+    });
+    return;
+  }
+
+  for (let i = 0; i < videos.length; i++) {
+    const v = videos[i];
+    await telegram("sendMessage", {
+      chat_id: state.chatId,
+      text:
+        `🎬 ${((page - 1) * CHAT_VIDEO_PAGE_SIZE * 2) + i + 1}. ${String(v.title).slice(0, 220)}\\n` +
+        (v.duration ? `مدت: ${v.duration}\\n` : "") +
+        `\\n${v.url}`,
+      disable_web_page_preview: false
+    });
+  }
+
+  const hasMore =
+    data.firstData.count > page * CHAT_VIDEO_PAGE_SIZE ||
+    data.secondData.count > page * CHAT_VIDEO_PAGE_SIZE;
+  await telegram("sendMessage", {
+    chat_id: state.chatId,
+    text: hasMore ? "برای دیدن ویدئوهای بیشتر، دکمه زیر رو بزن." : "پایان نتایج این جست‌وجو.",
+    reply_markup: hasMore ? {
+      inline_keyboard: [[{ text: "ویدئوهای بیشتر", callback_data: `cv:${token}` }]]
+    } : { inline_keyboard: [] }
+  });
 }
 
 async function sendChatImagePage(chatId, query, page, token) {
@@ -264,10 +311,10 @@ async function sendChatImagePage(chatId, query, page, token) {
 
 // ---------------- WEB SEARCH ----------------
 
-async function searchWeb(query) {
+async function searchWeb(query, count = 8) {
   const response = await axios.post(
     "https://api.langsearch.com/v1/web-search",
-    { query, count: 8 },
+    { query, count: Math.min(50, Math.max(1, count)) },
     {
       headers: {
         Authorization: `Bearer ${LANGSEARCH_KEY}`,
@@ -355,7 +402,7 @@ async function translateVideoQuery(query) {
 }
 
 // Ordinary video source
-async function searchPixabayVideos(query, page = 1) {
+async function searchPixabayVideos(query, page = 1, perPage = VIDEO_PAGE_SIZE) {
   const response = await axios.get(
     "https://pixabay.com/api/videos/",
     {
@@ -366,7 +413,7 @@ async function searchPixabayVideos(query, page = 1) {
         video_type: "all",
         safesearch: false,
         order: "popular",
-        per_page: VIDEO_PAGE_SIZE,
+        per_page: perPage,
         page
       },
       timeout: 25000
@@ -380,7 +427,7 @@ async function searchPixabayVideos(query, page = 1) {
 }
 
 // Second video source
-async function searchSecondVideoSource(query, page = 1) {
+async function searchSecondVideoSource(query, page = 1, perPage = VIDEO_PAGE_SIZE) {
   const response = await axios.get(
     "https://adultembed.com/api/database/browse/",
     {
@@ -389,7 +436,7 @@ async function searchSecondVideoSource(query, page = 1) {
         orientation: "all",
         sort: "popular",
         page,
-        page_size: VIDEO_PAGE_SIZE
+        page_size: perPage
       },
       headers: {
         "X-Site-URL": PUBLIC_URL
@@ -520,10 +567,10 @@ function formatSecondVideo(video) {
   return result;
 }
 
-async function fetchBothVideoSources(query, firstPage, secondPage) {
+async function fetchBothVideoSources(query, firstPage, secondPage, perPage = VIDEO_PAGE_SIZE) {
   const [firstResult, secondResult] = await Promise.allSettled([
-    searchPixabayVideos(query, firstPage),
-    searchSecondVideoSource(query, secondPage)
+    searchPixabayVideos(query, firstPage, perPage),
+    searchSecondVideoSource(query, secondPage, perPage)
   ]);
 
   const firstData =
@@ -776,6 +823,33 @@ async function handleCallback(query) {
   const data = query.data || "";
 
   try {
+    if (data.startsWith("cw:")) {
+      const token = data.slice(3);
+      const state = chatWebPages.get(token);
+      await telegram("answerCallbackQuery", { callback_query_id: query.id });
+      if (!state || state.chatId !== query.message?.chat?.id) return;
+      await telegram("editMessageReplyMarkup", {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+        reply_markup: { inline_keyboard: [] }
+      });
+      await sendChatWebPage(token);
+      return;
+    }
+    if (data.startsWith("cv:")) {
+      const token = data.slice(3);
+      const state = chatVideoPages.get(token);
+      await telegram("answerCallbackQuery", { callback_query_id: query.id });
+      if (!state || state.chatId !== query.message?.chat?.id) return;
+      state.page += 1;
+      await telegram("editMessageReplyMarkup", {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+        reply_markup: { inline_keyboard: [] }
+      });
+      await sendChatVideoPage(token);
+      return;
+    }
     if (data.startsWith("ci:")) {
       const token = data.slice(3);
       const state = chatImagePages.get(token);
