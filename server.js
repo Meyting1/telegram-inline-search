@@ -1,3 +1,4 @@
+
 const express = require("express");
 const axios = require("axios");
 const cheerio = require("cheerio");
@@ -9,12 +10,14 @@ app.use(express.json());
 const PORT = process.env.PORT || 10000;
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const LANGSEARCH_KEY = process.env.LANGSEARCH_API_KEY;
+const PIXABAY_KEY = process.env.PIXABAY_API_KEY;
 const PUBLIC_URL = process.env.PUBLIC_URL;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 const articles = new Map();
+const imageCache = new Map();
 
 app.get("/", (req, res) => {
   res.send("MoroorgarBot is running!");
@@ -42,7 +45,9 @@ app.post("/telegram-webhook", (req, res) => {
       .split("@")[0];
 
     if (command === "/start") {
-      showWelcome(update.message.chat.id);
+      showWelcome(update.message.chat.id).catch(err => {
+        console.error("Welcome error:", err.message);
+      });
     }
   }
 
@@ -93,8 +98,8 @@ async function showWelcome(chatId) {
         ],
         [
           {
-            text: "🖼 جستجوی عکس‌ها (به‌زودی)",
-            callback_data: "coming:images"
+            text: "🖼 جستجوی عکس‌ها",
+            switch_inline_query_current_chat: "img "
           }
         ],
         [
@@ -133,6 +138,43 @@ async function searchWeb(query) {
   return payload.data?.webPages?.value || [];
 }
 
+async function searchImages(query) {
+  const cacheKey = query.toLowerCase().trim();
+  const cached = imageCache.get(cacheKey);
+
+  if (cached && Date.now() - cached.time < 23 * 60 * 60 * 1000) {
+    return cached.hits;
+  }
+
+  const response = await axios.get(
+    "https://pixabay.com/api/",
+    {
+      params: {
+        key: PIXABAY_KEY,
+        q: query.slice(0, 100),
+        image_type: "photo",
+        safesearch: true,
+        order: "popular",
+        per_page: 10
+      },
+      timeout: 20000
+    }
+  );
+
+  const hits = response.data.hits || [];
+
+  imageCache.set(cacheKey, {
+    hits,
+    time: Date.now()
+  });
+
+  while (imageCache.size > 200) {
+    imageCache.delete(imageCache.keys().next().value);
+  }
+
+  return hits;
+}
+
 function saveArticle(url, title, summary) {
   const id = crypto.randomBytes(6).toString("hex");
 
@@ -154,6 +196,79 @@ async function answerInlineQuery(query) {
   const text = query.query.trim();
 
   try {
+    // IMAGE SEARCH
+    if (/^img(?:\s|$)/i.test(text)) {
+      const imageQuery = text.replace(/^img\s*/i, "").trim();
+
+      if (!imageQuery) {
+        return telegram("answerInlineQuery", {
+          inline_query_id: query.id,
+          cache_time: 1,
+          results: [{
+            type: "article",
+            id: "image-help",
+            title: "🖼 جستجوی عکس‌ها",
+            description: "عبارت مورد نظرت رو بعد از img وارد کن.",
+            input_message_content: {
+              message_text:
+                "🖼 برای جستجوی عکس، عبارت مورد نظرت رو بعد از img وارد کن."
+            }
+          }]
+        });
+      }
+
+      console.log("Image searching:", imageQuery);
+
+      const hits = await searchImages(imageQuery);
+
+      const results = hits
+        .filter(hit => hit.webformatURL && hit.previewURL)
+        .slice(0, 10)
+        .map(hit => ({
+          type: "photo",
+          id: String(hit.id),
+          photo_url: hit.webformatURL,
+          thumb_url: hit.previewURL,
+          photo_width: hit.webformatWidth || 640,
+          photo_height: hit.webformatHeight || 480,
+          title: (hit.tags || imageQuery).slice(0, 200),
+          description: `تصویر از ${hit.user || "Pixabay"}`,
+          caption:
+            `🖼 ${hit.tags || imageQuery}\n` +
+            `👤 عکاس: ${hit.user || "Pixabay"}\n` +
+            `📷 منبع: Pixabay`,
+          reply_markup: {
+            inline_keyboard: [[
+              {
+                text: "مشاهده در Pixabay",
+                url: hit.pageURL
+              }
+            ]]
+          }
+        }));
+
+      if (results.length === 0) {
+        results.push({
+          type: "article",
+          id: "no-images",
+          title: "عکسی پیدا نشد",
+          description: "عبارت دیگری رو امتحان کن.",
+          input_message_content: {
+            message_text:
+              "برای این عبارت عکسی پیدا نشد. لطفاً دوباره تلاش کن."
+          }
+        });
+      }
+
+      return telegram("answerInlineQuery", {
+        inline_query_id: query.id,
+        results,
+        cache_time: 10,
+        is_personal: true
+      });
+    }
+
+    // WEB SEARCH
     if (!text) {
       return telegram("answerInlineQuery", {
         inline_query_id: query.id,
@@ -389,9 +504,9 @@ async function handleCallback(query) {
     if (data.startsWith("coming:")) {
       const feature = data.split(":")[1];
 
-      const message = feature === "images"
-        ? "🖼 جستجوی عکس‌ها به‌زودی به ربات اضافه می‌شه!"
-        : "🎬 جستجوی فیلم‌ها به‌زودی به ربات اضافه می‌شه!";
+      const message = feature === "videos"
+        ? "🎬 جستجوی فیلم‌ها به‌زودی به ربات اضافه می‌شه!"
+        : "این قابلیت هنوز آماده نشده است.";
 
       return telegram("answerCallbackQuery", {
         callback_query_id: query.id,
@@ -504,6 +619,7 @@ async function startBot() {
   if (
     !BOT_TOKEN ||
     !LANGSEARCH_KEY ||
+    !PIXABAY_KEY ||
     !PUBLIC_URL ||
     !WEBHOOK_SECRET
   ) {
