@@ -240,32 +240,29 @@ async function sendChatVideoPage(token, existingData = null) {
     data.firstData.results.map(v => ({
       title: v.tags || "Video",
       duration: v.duration,
-      url: v.pageURL || v.videos?.medium?.url || v.videos?.small?.url
+      url: v.videos?.medium?.url || v.videos?.small?.url || v.pageURL,
+      sourceUrl: v.pageURL || ""
     })),
     data.secondData.results.map(v => ({
       title: v.title || "Video",
       duration: v.duration,
-      url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : ""
+      url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : "",
+      sourceUrl: ""
     }))
   ).filter(v => /^https?:\/\//i.test(v.url || "")).slice(0, CHAT_VIDEO_PAGE_SIZE * 2);
 
   if (!videos.length) {
-    await telegram("sendMessage", {
-      chat_id: state.chatId,
-      text: "برای این عبارت ویدئویی بیشتری پیدا نشد."
-    });
-    return;
-  }
-
-  for (let i = 0; i < videos.length; i++) {
-    const v = videos[i];
+    const buttons = [[{ text: "▶️ تماشای ویدئو", url: v.url }]];
+    if (/^https?:\/\//i.test(v.sourceUrl || "")) {
+      buttons[0].push({ text: "مشاهده منبع", url: v.sourceUrl });
+    }
     await telegram("sendMessage", {
       chat_id: state.chatId,
       text:
         `🎬 ${((page - 1) * CHAT_VIDEO_PAGE_SIZE * 2) + i + 1}. ${String(v.title).slice(0, 220)}\\n` +
-        (v.duration ? `مدت: ${v.duration}\\n` : "") +
-        `\\n${v.url}`,
-      disable_web_page_preview: false
+        (v.duration ? `مدت: ${v.duration}\\n` : ""),
+      reply_markup: { inline_keyboard: buttons },
+      disable_web_page_preview: true
     });
   }
 
@@ -386,6 +383,36 @@ async function searchImages(query, page = 1) {
 
 // Translate Persian queries to English when possible.
 async function translateSearchQuery(query) {
+  const cleanTranslation = (value) => {
+    if (!value || typeof value !== "string") return "";
+    return cheerio.load("<div>" + value + "</div>").text().trim();
+  };
+
+  // Google Translate first; MyMemory is a fallback.
+  try {
+    const response = await axios.get(
+      "https://translate.googleapis.com/translate_a/single",
+      {
+        params: {
+          client: "gtx",
+          sl: "auto",
+          tl: "en",
+          dt: "t",
+          q: query.slice(0, 400)
+        },
+        timeout: 15000
+      }
+    );
+    const translated = cleanTranslation(
+      (response.data?.[0] || []).map(part => part?.[0] || "").join("")
+    );
+    if (translated && translated.toLowerCase() !== query.toLowerCase()) {
+      return translated;
+    }
+  } catch (error) {
+    console.error("Google translation error:", error.message);
+  }
+
   try {
     const response = await axios.get(
       "https://api.mymemory.translated.net/get",
@@ -397,18 +424,14 @@ async function translateSearchQuery(query) {
         timeout: 15000
       }
     );
-
-    const translated =
-      response.data?.responseData?.translatedText?.trim();
-
-    if (
-      Number(response.data?.responseStatus) === 200 &&
-      translated
-    ) {
+    const translated = cleanTranslation(
+      response.data?.responseData?.translatedText
+    );
+    if (Number(response.data?.responseStatus) === 200 && translated) {
       return translated;
     }
   } catch (error) {
-    console.error("Translation error:", error.message);
+    console.error("MyMemory translation error:", error.message);
   }
 
   return query;
