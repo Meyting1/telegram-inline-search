@@ -289,33 +289,48 @@ async function fetchFreeAudiobookPage(page = 1) {
   const cached = freeAudiobookCache.get(safePage);
   if (cached && Date.now() - cached.fetchedAt < 10 * 60 * 1000) return cached.books;
 
-  const categoryUrl = "https://shenoto.com/cat/main/album/audio_book/49/" +
+  const categoryUrl = "https://shenoto.net/cat/main/album/audio_book/49/" +
     "%DA%A9%D8%AA%D8%A7%D8%A8%20%D9%87%D8%A7%DB%8C%20%D8%B5%D9%88%D8%AA%DB%8C%20%D8%B1%D8%A7%DB%8C%DA%AF%D8%A7%D9%86";
   const response = await axios.get(categoryUrl, {
     params: { page: safePage },
-    timeout: 20000,
+    timeout: 25000,
     headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; MorvarBot/1.0)",
-      "Accept": "text/html"
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml"
     }
   });
 
   const $ = cheerio.load(response.data);
   const books = [];
   const seen = new Set();
-  $('a[href*="/album/audio_book/"]').each((i, element) => {
+
+  // Shenoto's current category page uses a newer card layout. Do not rely
+  // on the old /album/audio_book/ URL pattern: detail links may be /album/...
+  $("a[href]").each((i, element) => {
     const anchor = $(element);
-    let title = anchor.text().replace(/\s+/g, " ").trim();
-    const href = anchor.attr("href") || "";
-    if (!title || !href || !/\/album\/audio_book\//.test(href)) return;
-    const url = new URL(href, "https://shenoto.com").toString();
-    if (seen.has(url)) return;
-    seen.add(url);
-    const cardText = [
-      anchor.text(), anchor.parent().text(), anchor.parent().parent().text()
-    ].join(" ").replace(/\s+/g, " ").trim();
+    const href = (anchor.attr("href") || "").trim();
+    if (!href || !/\/album\//i.test(href)) return;
+
+    const url = new URL(href, "https://shenoto.net").toString();
+    if (!/^https:\/\/shenoto\.net\//i.test(url) || seen.has(url)) return;
+
+    const card = anchor.closest("article, li, [class*='card'], [class*='item']").first();
+    const scope = card.length ? card : anchor;
+    const titleNode = scope.find("h1,h2,h3,h4,h5,h6,[class*='title'],img[alt]").first();
+    let title = "";
+    if (titleNode.length) {
+      title = titleNode.is("img") ? (titleNode.attr("alt") || "") : titleNode.text();
+    }
+    if (!title) title = anchor.attr("title") || anchor.text();
+    title = String(title).replace(/\s+/g, " ").trim();
+
+    // Reject navigation labels, empty cards and publisher-only links.
+    if (!title || title.length < 2 || title.length > 180) return;
+    if (/^(مشاهده همه|کتاب صوتی|پادکست|موسیقی|ورود|خرید اشتراک)$/i.test(title)) return;
+
+    const cardText = (scope.text() || anchor.text()).replace(/\s+/g, " ").trim();
     const durationMatch = cardText.match(/\b\d{1,2}:\d{2}(?::\d{2})?\b/);
-    title = title.replace(/\s+/g, " ").trim().slice(0, 180);
+    seen.add(url);
     books.push({ title, url, duration: durationMatch ? durationMatch[0] : "" });
   });
 
