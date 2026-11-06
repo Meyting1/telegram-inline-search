@@ -172,6 +172,98 @@ async function selectAiModel(chatId, modelKey) {
   });
 }
 
+async function generateImageForChat(chatId, requestText) {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+
+  if (!accountId || !apiToken) {
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "اتصال سرویس ساخت تصویر هنوز تنظیم نشده است."
+    });
+  }
+
+  const prefix = /^(?:\/(?:draw|image)(?:@\w+)?\s*|(?:تصویر|عکس|نقاشی)\s*(?:بساز|تولید\s*کن|ایجاد\s*کن|بکش)\s*[:：-]?\s*|(?:generate|create|draw)\s+(?:an?\s+)?(?:image|picture|photo)\s*[:：-]?\s*)/i;
+  const rawPrompt = String(requestText || "").replace(prefix, "").trim();
+
+  if (!rawPrompt) {
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "توضیح تصویر رو هم بنویس؛ مثلاً: تصویر بساز: یک ماشین فضایی در شهر آینده"
+    });
+  }
+
+  await telegram("sendChatAction", {
+    chat_id: chatId,
+    action: "upload_photo"
+  });
+
+  try {
+    let prompt = rawPrompt;
+    if (/[\u0600-\u06FF]/.test(rawPrompt)) {
+      const translated = await translateSearchQuery(rawPrompt.slice(0, 400));
+      if (translated) prompt = translated;
+    }
+
+    const endpoint =
+      "https://api.cloudflare.com/client/v4/accounts/" +
+      accountId +
+      "/ai/run/@cf/black-forest-labs/flux-1-schnell";
+    const result = await axios.post(
+      endpoint,
+      { prompt: prompt.slice(0, 2048), steps: 4 },
+      {
+        headers: {
+          Authorization: "Bearer " + apiToken,
+          "Content-Type": "application/json"
+        },
+        timeout: 120000
+      }
+    );
+
+    const imageBase64 = result.data?.result?.image;
+    if (!imageBase64) {
+      throw new Error(
+        result.data?.errors?.[0]?.message || "Cloudflare returned no image data"
+      );
+    }
+
+    const imageBuffer = Buffer.from(imageBase64, "base64");
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    form.append("caption", "🎨 تصویر ساخته‌شده با هوش مصنوعی مرورگر");
+    form.append(
+      "photo",
+      new Blob([imageBuffer], { type: "image/jpeg" }),
+      "morvarbot-image.jpg"
+    );
+
+    await axios.post(TELEGRAM_API + "/sendPhoto", form, {
+      timeout: 60000
+    });
+    console.log("Image generated and sent with Cloudflare Workers AI.");
+  } catch (error) {
+    const status = error.response?.status;
+    console.error(
+      "Cloudflare image generation error:",
+      error.response?.data || error.message
+    );
+
+    let message =
+      "ساخت تصویر ناموفق بود. لطفاً دوباره با توضیح کوتاه‌تری امتحان کن.";
+    if (status === 401 || status === 403) {
+      message = "دسترسی Cloudflare تأیید نشد؛ کلید API و مجوز Workers AI باید بررسی شود.";
+    } else if (status === 429) {
+      message = "سهمیه رایگان روزانه ساخت تصویر فعلاً تمام شده؛ بعد از صفر شدن سهمیه دوباره امتحان کن.";
+    }
+
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: message
+    });
+  }
+}
+
 async function handleAiMessage(chatId, userId, userText) {
   const groqKey = process.env.GROQ_API_KEY;
   const openRouterKey = process.env.OPENROUTER_API_KEY;
@@ -296,6 +388,9 @@ async function processChatMessage(message) {
   if (command === "/img") return selectChatMode(chatId, "image");
   if (command === "/vid") return selectChatMode(chatId, "video");
   if (command === "/ai") return showAiMenu(chatId);
+  if (command === "/draw" || command === "/image") {
+    return generateImageForChat(chatId, text.replace(/^\/(?:draw|image)(?:@\w+)?\s*/i, ""));
+  }
 
   if (text === "🤖 چت با هوش مصنوعی") return showAiMenu(chatId);
   if (text === "🔙 منوی اصلی") return showWelcome(chatId);
@@ -331,6 +426,9 @@ async function processChatMessage(message) {
         text: "لطفاً پیام متنی‌ات رو برای هوش مصنوعی بفرست."
       });
       return;
+    }
+    if (/^(?:تصویر|عکس|نقاشی)\s*(?:بساز|تولید\s*کن|ایجاد\s*کن|بکش)\b|^(?:generate|create|draw)\s+(?:an?\s+)?(?:image|picture|photo)\b/i.test(text)) {
+      return generateImageForChat(chatId, text);
     }
     await telegram("sendChatAction", {
       chat_id: chatId,
