@@ -427,7 +427,7 @@ async function processChatMessage(message) {
       });
       return;
     }
-    if (/^(?:تصویر|عکس|نقاشی)\s*(?:بساز|تولید\s*کن|ایجاد\s*کن|بکش)\b|^(?:generate|create|draw)\s+(?:an?\s+)?(?:image|picture|photo)\b/i.test(text)) {
+    if (/^(?:(?:تصویر|عکس|نقاشی)\s*(?:بساز|تولید\s*کن|ایجاد\s*کن|بکش)(?=$|[\s:：-])|(?:generate|create|draw)\s+(?:an?\s+)?(?:image|picture|photo)(?=$|[\s:：-]))/i.test(text)) {
       return generateImageForChat(chatId, text);
     }
     await telegram("sendChatAction", {
