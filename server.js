@@ -351,6 +351,7 @@ async function showFootballMenu(chatId) {
 }
 
 async function sendFootballFixtures(chatId, kind) {
+  chatModes.set(chatId, "football_" + kind);
   const labels = {
     live: "🔴 نتایج زنده فوتبال",
     today: "📅 مسابقات امروز",
@@ -951,7 +952,7 @@ async function processChatMessage(message) {
   if (text === "🌍 فوتبال جهان") return sendFootballFixtures(chatId, "world");
   if (text === "🔄 به‌روزرسانی نتایج") {
     const current = chatModes.get(chatId);
-    return sendFootballFixtures(chatId, current === "football_live" ? "live" : "today");
+    return sendFootballFixtures(chatId, current === "football_live" ? "live" : current === "football_iran" ? "iran" : current === "football_world" ? "world" : "today");
   }
   if (text === "💰 قیمت بازار" || text === "📂 دسته‌بندی قیمت‌ها") return showMarketMenu(chatId);
   if (text === "₿ رمزارزها") return showMarketPrices(chatId, "crypto");
@@ -1048,6 +1049,12 @@ async function processChatMessage(message) {
     return telegram("sendMessage", {
       chat_id: chatId,
       text: "از منوی کتاب صوتی، جستجوی کتاب یا فهرست کتاب‌های رایگان رو انتخاب کن."
+    });
+  }
+  if (mode === "football_menu") {
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "لطفاً یکی از بخش‌های فوتبال رو از منوی پایین انتخاب کن."
     });
   }
   if (mode === "market" || mode === "market_menu") {
