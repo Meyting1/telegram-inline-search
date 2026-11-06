@@ -152,6 +152,7 @@ async function showMarketPrices(chatId) {
     const cryptoIds = [
       ["بیت‌کوین", "btc"],
       ["اتریوم", "eth"],
+      ["تتر", "usdt"],
       ["تون‌کوین", "ton"],
       ["سولانا", "sol"],
       ["بایننس‌کوین", "bnb"],
@@ -159,7 +160,10 @@ async function showMarketPrices(chatId) {
       ["دوج‌کوین", "doge"],
       ["ترون", "trx"],
       ["کاردانو", "ada"],
-      ["لایت‌کوین", "ltc"]
+      ["لایت‌کوین", "ltc"],
+      ["پولکادات", "dot"],
+      ["پکس گلد", "paxg"],
+      ["بیت‌کوین کش", "bch"]
     ];
 
     const cryptoLines = cryptoIds.map(([label, id]) => {
@@ -167,14 +171,17 @@ async function showMarketPrices(chatId) {
       if (!item || item.price == null || !Number.isFinite(Number(item.price))) {
         return label + ": فعلاً در دسترس نیست";
       }
-      const usdPrice = Number(item.price);
-      const localToman = item.price_irt != null && Number.isFinite(Number(item.price_irt))
-        ? Number(item.price_irt)
-        : (usd && usd.price != null ? usdPrice * Number(usd.price) : null);
+      const isTether = id === "usdt";
+      const usdPrice = isTether ? 1 : Number(item.price);
+      const localToman = isTether
+        ? Number(item.price)
+        : (item.price_irt != null && Number.isFinite(Number(item.price_irt))
+            ? Number(item.price_irt)
+            : (usd && usd.price != null ? usdPrice * Number(usd.price) : null));
       const localText = localToman == null
         ? "قیمت ریالی موجود نیست"
         : format(rial(localToman)) + " ریال";
-      const stale = item.stale || (localToman != null && item.price_irt == null && usd?.stale)
+      const stale = item.stale || (localToman != null && !isTether && item.price_irt == null && usd?.stale)
         ? " ⚠️ (داده قدیمی)"
         : "";
       return label + ": $" + new Intl.NumberFormat("en-US", {
