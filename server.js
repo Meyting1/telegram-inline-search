@@ -25,6 +25,7 @@ const chatVideoPages = new Map();
 const aiModelByChat = new Map();
 const aiConversations = new Map();
 const pendingEditPhotos = new Map();
+let marketPriceCache = { data: null, fetchedAt: 0 };
 
 const AI_MODELS = {
   fast: {
@@ -107,13 +108,140 @@ async function showWelcome(chatId) {
       keyboard: [
         [{ text: "🔎 جستجوی وب" }, { text: "🖼 جستجوی عکس‌ها" }],
         [{ text: "🎬 جستجوی ویدئوها" }],
-        [{ text: "🤖 چت با هوش مصنوعی" }]
+        [{ text: "🤖 چت با هوش مصنوعی" }],
+        [{ text: "💰 قیمت بازار" }]
       ],
       resize_keyboard: true,
       is_persistent: true,
       input_field_placeholder: "اول نوع جست‌وجو رو انتخاب کن"
     }
   });
+}
+
+
+async function showMarketPrices(chatId) {
+  chatModes.set(chatId, "market");
+
+  try {
+    const now = Date.now();
+    if (!marketPriceCache.data || now - marketPriceCache.fetchedAt > 60000) {
+      const response = await axios.get("https://nerkhara.com/api/v1/latest.json", {
+        timeout: 15000,
+        headers: { "Accept": "application/json" }
+      });
+      if (!Array.isArray(response.data?.items)) {
+        throw new Error("Market API returned an unexpected response");
+      }
+      marketPriceCache = { data: response.data, fetchedAt: now };
+    }
+
+    const payload = marketPriceCache.data;
+    const items = new Map(payload.items.map(item => [item.id, item]));
+    const rial = value => Math.round(Number(value) * 10);
+    const format = value => new Intl.NumberFormat("fa-IR").format(Math.round(value));
+    const rateLine = (label, id) => {
+      const item = items.get(id);
+      if (!item || item.price == null || !Number.isFinite(Number(item.price))) {
+        return label + ": فعلاً در دسترس نیست";
+      }
+      const stale = item.stale ? " ⚠️ (داده قدیمی)" : "";
+      return label + ": " + format(rial(item.price)) + " ریال" + stale;
+    };
+
+    const usd = items.get("usd");
+    const cryptoIds = [
+      ["بیت‌کوین", "btc"],
+      ["اتریوم", "eth"],
+      ["تون‌کوین", "ton"],
+      ["سولانا", "sol"],
+      ["بایننس‌کوین", "bnb"],
+      ["ریپل", "xrp"],
+      ["دوج‌کوین", "doge"],
+      ["ترون", "trx"],
+      ["کاردانو", "ada"],
+      ["لایت‌کوین", "ltc"]
+    ];
+
+    const cryptoLines = cryptoIds.map(([label, id]) => {
+      const item = items.get(id);
+      if (!item || item.price == null || !Number.isFinite(Number(item.price))) {
+        return label + ": فعلاً در دسترس نیست";
+      }
+      const usdPrice = Number(item.price);
+      const localToman = item.price_irt != null && Number.isFinite(Number(item.price_irt))
+        ? Number(item.price_irt)
+        : (usd && usd.price != null ? usdPrice * Number(usd.price) : null);
+      const localText = localToman == null
+        ? "قیمت ریالی موجود نیست"
+        : format(rial(localToman)) + " ریال";
+      const stale = item.stale || (localToman != null && item.price_irt == null && usd?.stale)
+        ? " ⚠️ (داده قدیمی)"
+        : "";
+      return label + ": $" + new Intl.NumberFormat("en-US", {
+        maximumFractionDigits: usdPrice < 1 ? 6 : 2
+      }).format(usdPrice) + " | " + localText + stale;
+    });
+
+    const relevant = [
+      "usd", "eur", "gold-18k", "coin-bahar-azadi", "coin-emami",
+      ...cryptoIds.map(([, id]) => id)
+    ].map(id => items.get(id)).filter(Boolean);
+    const timestamps = relevant
+      .map(item => item.updated_utc ? Date.parse(item.updated_utc + "Z") : NaN)
+      .filter(Number.isFinite);
+    const latestTimestamp = timestamps.length ? Math.max(...timestamps) : NaN;
+    const updatedText = Number.isFinite(latestTimestamp)
+      ? new Intl.DateTimeFormat("fa-IR", {
+          timeZone: "Asia/Tehran",
+          dateStyle: "short",
+          timeStyle: "short"
+        }).format(new Date(latestTimestamp))
+      : "نامشخص";
+
+    const text =
+      "💰 قیمت بازار آزاد ایران\n" +
+      "━━━━━━━━━━━━━━\n" +
+      "💱 ارزها (ریال)\n" +
+      rateLine("دلار آزاد", "usd") + "\n" +
+      rateLine("یورو آزاد", "eur") + "\n\n" +
+      "🟡 طلا و سکه (ریال)\n" +
+      rateLine("طلای ۱۸ عیار، هر گرم", "gold-18k") + "\n" +
+      rateLine("سکه بهار آزادی", "coin-bahar-azadi") + "\n" +
+      rateLine("سکه امامی", "coin-emami") + "\n\n" +
+      "₿ رمزارزها (دلار | ریال)\n" +
+      cryptoLines.join("\n") + "\n\n" +
+      "🕒 آخرین زمان ثبت نرخ‌ها: " + updatedText + "\n" +
+      "منبع: NerkhAra (به‌روزرسانی تقریبی هر ۱۰ دقیقه)\n" +
+      "https://nerkhara.com";
+
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text,
+      reply_markup: {
+        keyboard: [
+          [{ text: "🔄 به‌روزرسانی قیمت‌ها" }],
+          [{ text: "🔙 منوی اصلی" }]
+        ],
+        resize_keyboard: true,
+        is_persistent: true,
+        input_field_placeholder: "برای دریافت دوباره قیمت‌ها بزن"
+      }
+    });
+  } catch (error) {
+    console.error("Market prices error:", error.response?.data || error.message);
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "❌ دریافت قیمت‌ها فعلاً ممکن نشد. لطفاً کمی بعد دوباره امتحان کن.",
+      reply_markup: {
+        keyboard: [
+          [{ text: "🔄 به‌روزرسانی قیمت‌ها" }],
+          [{ text: "🔙 منوی اصلی" }]
+        ],
+        resize_keyboard: true,
+        is_persistent: true
+      }
+    });
+  }
 }
 
 async function selectChatMode(chatId, mode) {
@@ -625,6 +753,7 @@ async function processChatMessage(message) {
   if (command === "/img") return selectChatMode(chatId, "image");
   if (command === "/vid") return selectChatMode(chatId, "video");
   if (command === "/ai") return showAiMenu(chatId);
+  if (command === "/prices") return showMarketPrices(chatId);
   if (command === "/gemini-test") {
     const testText = text.replace(/^\/gemini-test(?:@\w+)?\s*/i, "").trim() ||
       "سلام. لطفاً در یک جمله خودت را معرفی کن.";
@@ -636,6 +765,7 @@ async function processChatMessage(message) {
   }
 
   if (text === "🤖 چت با هوش مصنوعی") return showAiMenu(chatId);
+  if (text === "💰 قیمت بازار" || text === "🔄 به‌روزرسانی قیمت‌ها") return showMarketPrices(chatId);
   if (text === "🔙 منوی اصلی") {
     pendingEditPhotos.delete(chatId);
     return showWelcome(chatId);
@@ -711,6 +841,13 @@ async function processChatMessage(message) {
   if (text === "🎬 جستجوی ویدئوها") return selectChatMode(chatId, "video");
 
   const mode = chatModes.get(chatId);
+  if (mode === "market") {
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "برای نمایش دوباره قیمت‌ها، دکمه «🔄 به‌روزرسانی قیمت‌ها» رو بزن."
+    });
+    return;
+  }
   if (mode === "ai_select") {
     await telegram("sendMessage", {
       chat_id: chatId,
@@ -1860,7 +1997,8 @@ async function startBot() {
       { command: "web", description: "جست‌وجوی وب" },
       { command: "img", description: "جست‌وجوی عکس‌ها" },
       { command: "vid", description: "جست‌وجوی ویدئوها" },
-      { command: "ai", description: "گفتگو با هوش مصنوعی" }
+      { command: "ai", description: "گفتگو با هوش مصنوعی" },
+      { command: "prices", description: "قیمت ارز، طلا، سکه و رمزارزها" }
     ]
   });
 
