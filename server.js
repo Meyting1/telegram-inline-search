@@ -1033,11 +1033,35 @@ async function sendNearbyPlaces(chatId, location) {
   const query = `[out:json][timeout:20];(node(around:5000,${lat},${lon})${category.filter};way(around:5000,${lat},${lon})${category.filter};relation(around:5000,${lat},${lon})${category.filter};);out center tags 40;`;
 
   try {
-    const response = await axios.post(
-      "https://overpass-api.de/api/interpreter",
-      query,
-      { headers: { "Content-Type": "text/plain; charset=UTF-8" }, timeout: 25000 }
-    );
+    // Try several public Overpass instances in sequence so one unavailable
+    // server does not break the location search.
+    const overpassEndpoints = [
+      "https://overpass.private.coffee/api/interpreter",
+      "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+      "https://overpass-api.de/api/interpreter"
+    ];
+    let response = null;
+    let lastOverpassError = null;
+
+    for (const endpoint of overpassEndpoints) {
+      try {
+        response = await axios.post(endpoint, query, {
+          headers: {
+            "Content-Type": "text/plain; charset=UTF-8",
+            "User-Agent": "MorvarBot/1.0 (Telegram nearby places search)"
+          },
+          timeout: 30000
+        });
+        break;
+      } catch (endpointError) {
+        lastOverpassError = endpointError;
+        console.error("Overpass endpoint failed:", endpoint, endpointError.code || endpointError.message);
+      }
+    }
+
+    if (!response) {
+      throw lastOverpassError || new Error("All Overpass endpoints failed");
+    }
 
     const elements = (response.data?.elements || []).map(item => {
       const itemLat = item.lat ?? item.center?.lat;
