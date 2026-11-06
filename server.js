@@ -231,7 +231,7 @@ async function showMarketPrices(chatId, category = "all") {
       : "نامشخص";
 
     text += "\n\n🕒 آخرین زمان ثبت نرخ‌ها: " + updatedText +
-      "\nمنبع: NerkhAra (به‌روزرسانی تقریبی هر ۱۰ دقیقه)\nhttps://nerkhara.com";
+      "\nمنبع: NerkhAra (به‌روزرسانی تقریبی هر ۱۰ دقیقه)";
 
     return telegram("sendMessage", {
       chat_id: chatId,
