@@ -27,6 +27,7 @@ const aiModelByChat = new Map();
 const aiConversations = new Map();
 const pendingEditPhotos = new Map();
 const marketCategoryByChat = new Map();
+const nearbyCategoryByChat = new Map();
 let marketPriceCache = { data: null, fetchedAt: 0 };
 
 const AI_MODELS = {
@@ -77,7 +78,7 @@ app.post("/telegram-webhook", (req, res) => {
   res.sendStatus(200);
   const update = req.body;
 
-  if (update.message?.text || update.message?.photo) {
+  if (update.message?.text || update.message?.photo || update.message?.location) {
     processChatMessage(update.message).catch(console.error);
   }
 
@@ -110,6 +111,7 @@ async function showWelcome(chatId) {
       keyboard: [
         [{ text: "🖼 جستجوی عکس‌ها" }, { text: "🎬 جستجوی ویدئوها" }],
         [{ text: "⚽ نتایج فوتبال" }],
+        [{ text: "📍 مکان‌یاب هوشمند" }],
         [{ text: "🤖 چت با هوش مصنوعی" }],
         [{ text: "💰 قیمت بازار" }]
       ],
@@ -367,7 +369,7 @@ async function sendFootballFixtures(chatId, kind) {
       fixtures = await fetchFootballFixtures({ date: tehranDateOffset(0) }, 5 * 60 * 1000);
     } else {
       // Use the proven single-date filter instead of from/to.
-      // Fetch a 15-day window in small batches to avoid API bursts.
+      // Free API plan currently allows the latest three-day window.
       const dates = Array.from({ length: 3 }, (_, index) => tehranDateOffset(index - 2));
       const dailyFixtures = [];
       for (let index = 0; index < dates.length; index += 4) {
@@ -939,12 +941,187 @@ async function handleAiMessage(chatId, userId, userText, forceProvider = null) {
   }
 }
 
+const NEARBY_CATEGORIES = {
+  hospital: {
+    label: "🏥 بیمارستان و درمانگاه",
+    filter: '["amenity"~"^(hospital|clinic|doctors)$"]'
+  },
+  pharmacy: {
+    label: "💊 داروخانه",
+    filter: '["amenity"="pharmacy"]'
+  },
+  hotel: {
+    label: "🏨 هتل و اقامتگاه",
+    filter: '["tourism"~"^(hotel|motel|hostel|guest_house)$"]'
+  },
+  food: {
+    label: "🍽️ رستوران و غذاخوری",
+    filter: '["amenity"~"^(restaurant|cafe|fast_food|food_court)$"]'
+  },
+  fuel: {
+    label: "⛽ پمپ‌بنزین",
+    filter: '["amenity"="fuel"]'
+  },
+  atm: {
+    label: "🏧 بانک و خودپرداز",
+    filter: '["amenity"~"^(bank|atm)$"]'
+  }
+};
+
+async function showNearbyMenu(chatId) {
+  chatModes.set(chatId, "nearby_select");
+  return telegram("sendMessage", {
+    chat_id: chatId,
+    text: "📍 مکان‌یاب هوشمند\n\nدنبال چه مکانی در اطراف خودت می‌گردی؟",
+    reply_markup: {
+      keyboard: [
+        [{ text: "🏥 بیمارستان و درمانگاه" }, { text: "💊 داروخانه" }],
+        [{ text: "🏨 هتل و اقامتگاه" }, { text: "🍽️ رستوران و غذاخوری" }],
+        [{ text: "⛽ پمپ‌بنزین" }, { text: "🏧 بانک و خودپرداز" }],
+        [{ text: "🔙 منوی اصلی" }]
+      ],
+      resize_keyboard: true,
+      is_persistent: true
+    }
+  });
+}
+
+async function askForNearbyLocation(chatId, categoryKey) {
+  nearbyCategoryByChat.set(chatId, categoryKey);
+  chatModes.set(chatId, "nearby_location");
+  const category = NEARBY_CATEGORIES[categoryKey];
+  return telegram("sendMessage", {
+    chat_id: chatId,
+    text: `${category.label}\n\nبرای پیدا کردن نزدیک‌ترین مکان‌ها، دکمه زیر رو بزن و موقعیتت رو از طریق تلگرام ارسال کن. موقعیتت فقط برای همین جست‌وجو استفاده می‌شه و در ربات ذخیره نمی‌شه.`,
+    reply_markup: {
+      keyboard: [
+        [{ text: "📍 ارسال موقعیت من", request_location: true }],
+        [{ text: "🔙 منوی مکان‌یاب" }, { text: "🔙 منوی اصلی" }]
+      ],
+      resize_keyboard: true,
+      is_persistent: true,
+      one_time_keyboard: true
+    }
+  });
+}
+
+function nearbyDistanceMeters(lat1, lon1, lat2, lon2) {
+  const rad = value => value * Math.PI / 180;
+  const dLat = rad(lat2 - lat1);
+  const dLon = rad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatNearbyDistance(meters) {
+  return meters < 1000
+    ? `${Math.round(meters)} متر`
+    : `${(meters / 1000).toFixed(1)} کیلومتر`;
+}
+
+async function sendNearbyPlaces(chatId, location) {
+  const categoryKey = nearbyCategoryByChat.get(chatId);
+  const category = NEARBY_CATEGORIES[categoryKey];
+  if (!category) {
+    return showNearbyMenu(chatId);
+  }
+
+  await telegram("sendChatAction", { chat_id: chatId, action: "typing" });
+  const lat = Number(location.latitude);
+  const lon = Number(location.longitude);
+  const query = `[out:json][timeout:20];(node(around:5000,${lat},${lon})${category.filter};way(around:5000,${lat},${lon})${category.filter};relation(around:5000,${lat},${lon})${category.filter};);out center tags 40;`;
+
+  try {
+    const response = await axios.post(
+      "https://overpass-api.de/api/interpreter",
+      query,
+      { headers: { "Content-Type": "text/plain; charset=UTF-8" }, timeout: 25000 }
+    );
+
+    const elements = (response.data?.elements || []).map(item => {
+      const itemLat = item.lat ?? item.center?.lat;
+      const itemLon = item.lon ?? item.center?.lon;
+      if (!Number.isFinite(itemLat) || !Number.isFinite(itemLon)) return null;
+      return {
+        name: item.tags?.name || item.tags?.["name:fa"] || item.tags?.brand || category.label,
+        lat: itemLat,
+        lon: itemLon,
+        tags: item.tags || {},
+        distance: nearbyDistanceMeters(lat, lon, itemLat, itemLon)
+      };
+    }).filter(Boolean).sort((a, b) => a.distance - b.distance);
+
+    const unique = [];
+    const seen = new Set();
+    for (const item of elements) {
+      const key = `${item.name.toLowerCase()}|${item.lat.toFixed(4)}|${item.lon.toFixed(4)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(item);
+      if (unique.length >= 8) break;
+    }
+
+    if (!unique.length) {
+      return telegram("sendMessage", {
+        chat_id: chatId,
+        text: `در شعاع ۵ کیلومتری شما موردی برای «${category.label}» در داده‌های نقشه پیدا نکردم. ممکنه اطلاعات این منطقه کامل نباشه؛ می‌تونی دسته دیگری رو امتحان کنی.`,
+        reply_markup: {
+          keyboard: [[{ text: "🔙 منوی مکان‌یاب" }], [{ text: "🔙 منوی اصلی" }]],
+          resize_keyboard: true,
+          is_persistent: true
+        }
+      });
+    }
+
+    const lines = unique.map((item, index) => {
+      const address = [item.tags["addr:street"], item.tags["addr:housenumber"]]
+        .filter(Boolean).join(" ");
+      const mapUrl = `https://www.google.com/maps/dir/?api=1&destination=${item.lat},${item.lon}`;
+      return `${index + 1}. **${item.name}**\n📏 فاصله: ${formatNearbyDistance(item.distance)}` +
+        (address ? `\n📍 ${address}` : "") +
+        `\n🧭 [مسیریابی](${mapUrl})`;
+    });
+
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: `📍 نزدیک‌ترین موارد برای «${category.label}» در شعاع ۵ کیلومتری:\n\n${lines.join("\n\n")}\n\n🔎 داده‌ها از OpenStreetMap هستند؛ ممکنه بعضی مکان‌ها ثبت نشده یا اطلاعاتشون قدیمی باشه.`,
+      parse_mode: "Markdown",
+      disable_web_page_preview: true,
+      reply_markup: {
+        keyboard: [
+          [{ text: "🔄 جست‌وجو با موقعیت جدید" }],
+          [{ text: "🔙 منوی مکان‌یاب" }, { text: "🔙 منوی اصلی" }]
+        ],
+        resize_keyboard: true,
+        is_persistent: true
+      }
+    });
+  } catch (error) {
+    console.error("Nearby places error:", error.response?.data || error.message);
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "فعلاً سرویس نقشه پاسخ نمی‌ده. لطفاً چند دقیقه دیگه دوباره امتحان کن.",
+      reply_markup: {
+        keyboard: [[{ text: "🔄 تلاش دوباره" }], [{ text: "🔙 منوی مکان‌یاب" }, { text: "🔙 منوی اصلی" }]],
+        resize_keyboard: true,
+        is_persistent: true
+      }
+    });
+  }
+}
+
 async function processChatMessage(message) {
   const chatId = message.chat.id;
   const text = (message.text || "").trim();
   const command = text.split(/\s+/)[0].split("@")[0].toLowerCase();
 
   if (message.photo?.length) return handleIncomingEditPhoto(message);
+
+  if (message.location) {
+    if (chatModes.get(chatId) !== "nearby_location") return showNearbyMenu(chatId);
+    return sendNearbyPlaces(chatId, message.location);
+  }
 
   if (command === "/start") return showWelcome(chatId);
   if (command === "/img") return selectChatMode(chatId, "image");
@@ -962,6 +1139,14 @@ async function processChatMessage(message) {
   }
 
   if (text === "🤖 چت با هوش مصنوعی") return showAiMenu(chatId);
+  if (text === "📍 مکان‌یاب هوشمند") return showNearbyMenu(chatId);
+  if (text === "🔙 منوی مکان‌یاب") return showNearbyMenu(chatId);
+  if (text === "🔄 جست‌وجو با موقعیت جدید" || text === "🔄 تلاش دوباره") {
+    const selected = nearbyCategoryByChat.get(chatId);
+    return selected ? askForNearbyLocation(chatId, selected) : showNearbyMenu(chatId);
+  }
+  const nearbyChoice = Object.entries(NEARBY_CATEGORIES).find(([, item]) => item.label === text);
+  if (nearbyChoice) return askForNearbyLocation(chatId, nearbyChoice[0]);
   if (text === "⚽ نتایج فوتبال" || text === "⚽ بخش فوتبال") return showFootballMenu(chatId);
   if (text === "🔴 نتایج زنده") return sendFootballFixtures(chatId, "live");
   if (text === "📅 مسابقات امروز") return sendFootballFixtures(chatId, "today");
@@ -1057,6 +1242,18 @@ async function processChatMessage(message) {
     return telegram("sendMessage", {
       chat_id: chatId,
       text: "لطفاً یکی از بخش‌های فوتبال رو از منوی پایین انتخاب کن."
+    });
+  }
+  if (mode === "nearby_select") {
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "لطفاً اول نوع مکان موردنظرت رو از دکمه‌های منوی پایین انتخاب کن."
+    });
+  }
+  if (mode === "nearby_location") {
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "برای ادامه، دکمه «📍 ارسال موقعیت من» رو بزن تا موقعیتت رو از طریق تلگرام بفرستی."
     });
   }
   if (mode === "market" || mode === "market_menu") {
