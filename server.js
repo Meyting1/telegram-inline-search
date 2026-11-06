@@ -119,8 +119,30 @@ async function showWelcome(chatId) {
 }
 
 
-async function showMarketPrices(chatId) {
+async function showMarketMenu(chatId) {
+  chatModes.set(chatId, "market_menu");
+  return telegram("sendMessage", {
+    chat_id: chatId,
+    text: "💰 کدوم بخش از قیمت‌های بازار رو می‌خوای ببینی؟",
+    reply_markup: {
+      keyboard: [
+        [{ text: "₿ رمزارزها" }],
+        [{ text: "💱 ارزهای خارجی" }, { text: "🪙 طلا و سکه" }],
+        [{ text: "🔙 منوی اصلی" }]
+      ],
+      resize_keyboard: true,
+      is_persistent: true
+    }
+  });
+}
+
+async function showMarketPrices(chatId, category = "all") {
   chatModes.set(chatId, "market");
+  const categoryTitles = {
+    crypto: "₿ قیمت رمزارزها",
+    currency: "💱 قیمت ارزهای خارجی",
+    gold: "🪙 قیمت طلا و سکه"
+  };
 
   try {
     const now = Date.now();
@@ -135,8 +157,7 @@ async function showMarketPrices(chatId) {
       marketPriceCache = { data: response.data, fetchedAt: now };
     }
 
-    const payload = marketPriceCache.data;
-    const items = new Map(payload.items.map(item => [item.id, item]));
+    const items = new Map(marketPriceCache.data.items.map(item => [item.id, item]));
     const rial = value => Math.round(Number(value) * 10);
     const format = value => new Intl.NumberFormat("fa-IR").format(Math.round(value));
     const rateLine = (label, id) => {
@@ -144,28 +165,18 @@ async function showMarketPrices(chatId) {
       if (!item || item.price == null || !Number.isFinite(Number(item.price))) {
         return label + ": فعلاً در دسترس نیست";
       }
-      const stale = item.stale ? " ⚠️ (داده قدیمی)" : "";
-      return label + ": " + format(rial(item.price)) + " ریال" + stale;
+      return label + ": " + format(rial(item.price)) + " ریال" +
+        (item.stale ? " ⚠️ (داده قدیمی)" : "");
     };
 
     const usd = items.get("usd");
     const cryptoIds = [
-      ["بیت‌کوین", "btc"],
-      ["اتریوم", "eth"],
-      ["تتر", "usdt"],
-      ["تون‌کوین", "ton"],
-      ["سولانا", "sol"],
-      ["بایننس‌کوین", "bnb"],
-      ["ریپل", "xrp"],
-      ["دوج‌کوین", "doge"],
-      ["ترون", "trx"],
-      ["کاردانو", "ada"],
-      ["لایت‌کوین", "ltc"],
-      ["پولکادات", "dot"],
-      ["پکس گلد", "paxg"],
-      ["بیت‌کوین کش", "bch"]
+      ["بیت‌کوین", "btc"], ["اتریوم", "eth"], ["تتر", "usdt"],
+      ["تون‌کوین", "ton"], ["سولانا", "sol"], ["بایننس‌کوین", "bnb"],
+      ["ریپل", "xrp"], ["دوج‌کوین", "doge"], ["ترون", "trx"],
+      ["کاردانو", "ada"], ["لایت‌کوین", "ltc"], ["پولکادات", "dot"],
+      ["پکس گلد", "paxg"], ["بیت‌کوین کش", "bch"]
     ];
-
     const cryptoLines = cryptoIds.map(([label, id]) => {
       const item = items.get(id);
       if (!item || item.price == null || !Number.isFinite(Number(item.price))) {
@@ -181,57 +192,56 @@ async function showMarketPrices(chatId) {
       const localText = localToman == null
         ? "قیمت ریالی موجود نیست"
         : format(rial(localToman)) + " ریال";
-      const stale = item.stale || (localToman != null && !isTether && item.price_irt == null && usd?.stale)
-        ? " ⚠️ (داده قدیمی)"
-        : "";
+      const stale = item.stale || (localToman != null && !isTether &&
+        item.price_irt == null && usd?.stale) ? " ⚠️ (داده قدیمی)" : "";
       return label + ": $" + new Intl.NumberFormat("en-US", {
         maximumFractionDigits: usdPrice < 1 ? 6 : 2
       }).format(usdPrice) + " | " + localText + stale;
     });
 
-    const relevant = [
-      "usd", "eur", "gold-18k", "coin-bahar-azadi", "coin-emami",
-      ...cryptoIds.map(([, id]) => id)
-    ].map(id => items.get(id)).filter(Boolean);
-    const timestamps = relevant
-      .map(item => item.updated_utc ? Date.parse(item.updated_utc + "Z") : NaN)
+    let text = categoryTitles[category] + "\n━━━━━━━━━━━━━━\n";
+    if (category === "crypto") {
+      text += "قیمت به دلار و معادل ریالی\n" + cryptoLines.join("\n");
+    } else if (category === "currency") {
+      text += "نرخ ارز آزاد (ریال)\n" +
+        rateLine("دلار آزاد", "usd") + "\n" +
+        rateLine("یورو آزاد", "eur");
+    } else if (category === "gold") {
+      text += "قیمت‌ها به ریال\n" +
+        rateLine("طلای ۱۸ عیار، هر گرم", "gold-18k") + "\n" +
+        rateLine("سکه بهار آزادی", "coin-bahar-azadi") + "\n" +
+        rateLine("سکه امامی", "coin-emami");
+    } else {
+      text += "برای مشاهده قیمت‌ها، یکی از دسته‌ها رو انتخاب کن.";
+    }
+
+    const relevantIds = category === "crypto" ? cryptoIds.map(([, id]) => id)
+      : category === "currency" ? ["usd", "eur"]
+      : ["gold-18k", "coin-bahar-azadi", "coin-emami"];
+    const timestamps = relevantIds.map(id => items.get(id)?.updated_utc)
+      .filter(Boolean).map(value => Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : value + "Z"))
       .filter(Number.isFinite);
     const latestTimestamp = timestamps.length ? Math.max(...timestamps) : NaN;
     const updatedText = Number.isFinite(latestTimestamp)
       ? new Intl.DateTimeFormat("fa-IR", {
-          timeZone: "Asia/Tehran",
-          dateStyle: "short",
-          timeStyle: "short"
+          timeZone: "Asia/Tehran", dateStyle: "short", timeStyle: "short"
         }).format(new Date(latestTimestamp))
       : "نامشخص";
 
-    const text =
-      "💰 قیمت بازار آزاد ایران\n" +
-      "━━━━━━━━━━━━━━\n" +
-      "💱 ارزها (ریال)\n" +
-      rateLine("دلار آزاد", "usd") + "\n" +
-      rateLine("یورو آزاد", "eur") + "\n\n" +
-      "🟡 طلا و سکه (ریال)\n" +
-      rateLine("طلای ۱۸ عیار، هر گرم", "gold-18k") + "\n" +
-      rateLine("سکه بهار آزادی", "coin-bahar-azadi") + "\n" +
-      rateLine("سکه امامی", "coin-emami") + "\n\n" +
-      "₿ رمزارزها (دلار | ریال)\n" +
-      cryptoLines.join("\n") + "\n\n" +
-      "🕒 آخرین زمان ثبت نرخ‌ها: " + updatedText + "\n" +
-      "منبع: NerkhAra (به‌روزرسانی تقریبی هر ۱۰ دقیقه)\n" +
-      "https://nerkhara.com";
+    text += "\n\n🕒 آخرین زمان ثبت نرخ‌ها: " + updatedText +
+      "\nمنبع: NerkhAra (به‌روزرسانی تقریبی هر ۱۰ دقیقه)\nhttps://nerkhara.com";
 
     return telegram("sendMessage", {
       chat_id: chatId,
       text,
       reply_markup: {
         keyboard: [
-          [{ text: "🔄 به‌روزرسانی قیمت‌ها" }],
+          [{ text: "🔄 به‌روزرسانی همین بخش" }],
+          [{ text: "📂 دسته‌بندی قیمت‌ها" }],
           [{ text: "🔙 منوی اصلی" }]
         ],
         resize_keyboard: true,
-        is_persistent: true,
-        input_field_placeholder: "برای دریافت دوباره قیمت‌ها بزن"
+        is_persistent: true
       }
     });
   } catch (error) {
@@ -241,7 +251,8 @@ async function showMarketPrices(chatId) {
       text: "❌ دریافت قیمت‌ها فعلاً ممکن نشد. لطفاً کمی بعد دوباره امتحان کن.",
       reply_markup: {
         keyboard: [
-          [{ text: "🔄 به‌روزرسانی قیمت‌ها" }],
+          [{ text: "🔄 به‌روزرسانی همین بخش" }],
+          [{ text: "📂 دسته‌بندی قیمت‌ها" }],
           [{ text: "🔙 منوی اصلی" }]
         ],
         resize_keyboard: true,
@@ -772,7 +783,14 @@ async function processChatMessage(message) {
   }
 
   if (text === "🤖 چت با هوش مصنوعی") return showAiMenu(chatId);
-  if (text === "💰 قیمت بازار" || text === "🔄 به‌روزرسانی قیمت‌ها") return showMarketPrices(chatId);
+  if (text === "💰 قیمت بازار" || text === "📂 دسته‌بندی قیمت‌ها") return showMarketMenu(chatId);
+  if (text === "₿ رمزارزها") return showMarketPrices(chatId, "crypto");
+  if (text === "💱 ارزهای خارجی") return showMarketPrices(chatId, "currency");
+  if (text === "🪙 طلا و سکه") return showMarketPrices(chatId, "gold");
+  if (text === "🔄 به‌روزرسانی همین بخش") {
+    const current = chatModes.get(chatId);
+    return showMarketPrices(chatId, current === "market" ? "currency" : "currency");
+  }
   if (text === "🔙 منوی اصلی") {
     pendingEditPhotos.delete(chatId);
     return showWelcome(chatId);
@@ -848,10 +866,10 @@ async function processChatMessage(message) {
   if (text === "🎬 جستجوی ویدئوها") return selectChatMode(chatId, "video");
 
   const mode = chatModes.get(chatId);
-  if (mode === "market") {
+  if (mode === "market" || mode === "market_menu") {
     await telegram("sendMessage", {
       chat_id: chatId,
-      text: "برای نمایش دوباره قیمت‌ها، دکمه «🔄 به‌روزرسانی قیمت‌ها» رو بزن."
+      text: "برای انتخاب بخش قیمت‌ها، از دکمه‌های منو استفاده کن."
     });
     return;
   }
