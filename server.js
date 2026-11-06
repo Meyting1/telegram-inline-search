@@ -987,17 +987,18 @@ async function processChatMessage(message) {
 
     if (mode === "video") {
       let query = await translateSearchQuery(text);
-      let data = await fetchBothVideoSources(query, 1, 1, CHAT_VIDEO_PAGE_SIZE);
+      let data = await fetchBothVideoSources(query, 1, 1, CHAT_VIDEO_PAGE_SIZE, 1, text);
       if (
         data.firstData.results.length === 0 &&
         data.secondData.results.length === 0 &&
+        data.thirdData.results.length === 0 &&
         query.toLowerCase() !== text.toLowerCase()
       ) {
         query = text;
-        data = await fetchBothVideoSources(query, 1, 1, CHAT_VIDEO_PAGE_SIZE);
+        data = await fetchBothVideoSources(query, 1, 1, CHAT_VIDEO_PAGE_SIZE, 1);
       }
       const token = crypto.randomBytes(5).toString("hex");
-      chatVideoPages.set(token, { chatId, query, page: 1 });
+      chatVideoPages.set(token, { chatId, query: text, translatedQuery: query, page: 1 });
       return sendChatVideoPage(token, data);
     }
   } catch (error) {
@@ -1041,7 +1042,8 @@ async function sendChatVideoPage(token, existingData = null) {
   if (!state) return;
   const page = state.page;
   const data = existingData || await fetchBothVideoSources(
-    state.query, page, page, CHAT_VIDEO_PAGE_SIZE
+    state.translatedQuery || state.query, page, page, CHAT_VIDEO_PAGE_SIZE, page,
+    state.translatedQuery && state.translatedQuery !== state.query ? state.query : null
   );
   const videos = interleaveVideos(
     data.firstData.results.map(v => ({
@@ -1051,10 +1053,13 @@ async function sendChatVideoPage(token, existingData = null) {
       sourceUrl: v.pageURL || ""
     })),
     data.secondData.results.map(v => ({
-      title: v.title || "Video",
-      duration: v.duration,
-      url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : "",
-      sourceUrl: ""
+      title: v.title || "Video", duration: v.duration,
+      url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : "", sourceUrl: ""
+    })),
+    data.thirdData.results.map(v => ({
+      title: v.name || "PeerTube video",
+      duration: v.duration ? `${Math.floor(v.duration / 60)}:${String(v.duration % 60).padStart(2, "0")}` : "",
+      url: v.embedUrl || v.url || "", sourceUrl: v.url || ""
     }))
   ).filter(v => /^https?:\/\//i.test(v.url || "")).slice(0, CHAT_VIDEO_PAGE_SIZE * 2);
 
@@ -1084,7 +1089,8 @@ async function sendChatVideoPage(token, existingData = null) {
 
   const hasMore =
     data.firstData.count > page * CHAT_VIDEO_PAGE_SIZE ||
-    data.secondData.count > page * CHAT_VIDEO_PAGE_SIZE;
+    data.secondData.count > page * CHAT_VIDEO_PAGE_SIZE ||
+    data.thirdData.count > page * CHAT_VIDEO_PAGE_SIZE;
   await telegram("sendMessage", {
     chat_id: state.chatId,
     text: hasMore ? "برای دیدن ویدئوهای بیشتر، دکمه زیر رو بزن." : "پایان نتایج این جست‌وجو.",
@@ -1279,55 +1285,47 @@ async function searchPixabayVideos(query, page = 1, perPage = VIDEO_PAGE_SIZE) {
 
 // Second video source
 async function searchSecondVideoSource(query, page = 1, perPage = VIDEO_PAGE_SIZE) {
-  const response = await axios.get(
-    "https://adultembed.com/api/database/browse/",
-    {
-      params: {
-        search: query.slice(0, 150),
-        orientation: "all",
-        sort: "popular",
-        page,
-        page_size: perPage
-      },
-      headers: {
-        "X-Site-URL": PUBLIC_URL
-      },
-      timeout: 25000
-    }
-  );
+  const response = await axios.get("https://adultembed.com/api/database/browse/", {
+    params: { search: query.slice(0, 150), orientation: "all", sort: "popular", page, page_size: perPage },
+    headers: { "X-Site-URL": PUBLIC_URL }, timeout: 25000
+  });
+  return { results: response.data.results || [], count: Number(response.data.count || 0) };
+}
 
-  return {
-    results: response.data.results || [],
-    count: Number(response.data.count || 0)
-  };
+async function searchSepiaSearchVideos(query, page = 1, perPage = VIDEO_PAGE_SIZE, alternateQuery = null) {
+  const queries = [...new Set([query, alternateQuery].filter(value => typeof value === "string" && value.trim()))];
+  const requests = await Promise.allSettled(queries.map(search => axios.get(
+    "https://sepiasearch.org/api/v1/search/videos",
+    {
+      params: { search: search.slice(0, 200), start: Math.max(0, (page - 1) * perPage), count: perPage, nsfw: false, sort: "-match" },
+      timeout: 25000, headers: { Accept: "application/json" }
+    }
+  )));
+  const results = [], seen = new Set();
+  let count = 0;
+  for (const request of requests) {
+    if (request.status !== "fulfilled") { console.error("SepiaSearch query failed:", request.reason?.message); continue; }
+    const payload = request.value.data || {};
+    count += Number(payload.total || 0);
+    for (const video of (Array.isArray(payload.data) ? payload.data : [])) {
+      const key = video.uuid || video.id || video.url;
+      if (!key || seen.has(key)) continue;
+      seen.add(key); results.push(video);
+    }
+  }
+  if (requests.every(request => request.status === "rejected")) throw new Error("All SepiaSearch queries failed");
+  return { results, count };
 }
 
 function parseVideoOffset(offset) {
-  if (!offset) {
-    return { firstPage: 1, secondPage: 1 };
-  }
-
-  const match = /^p(\d+)-a(\d+)$/.exec(offset);
-
-  if (!match) {
-    return { firstPage: 1, secondPage: 1 };
-  }
-
-  return {
-    firstPage: Math.max(1, Number(match[1]) || 1),
-    secondPage: Math.max(1, Number(match[2]) || 1)
-  };
+  if (!offset) return { firstPage: 1, secondPage: 1, thirdPage: 1 };
+  const match = /^p(\d+)-a(\d+)(?:-s(\d+))?$/.exec(offset);
+  if (!match) return { firstPage: 1, secondPage: 1, thirdPage: 1 };
+  return { firstPage: Math.max(1, Number(match[1]) || 1), secondPage: Math.max(1, Number(match[2]) || 1), thirdPage: Math.max(1, Number(match[3]) || 1) };
 }
-
-function interleaveVideos(first, second) {
-  const combined = [];
-  const max = Math.max(first.length, second.length);
-
-  for (let i = 0; i < max; i++) {
-    if (first[i]) combined.push(first[i]);
-    if (second[i]) combined.push(second[i]);
-  }
-
+function interleaveVideos(...lists) {
+  const combined = [], max = Math.max(0, ...lists.map(list => list.length));
+  for (let i = 0; i < max; i++) for (const list of lists) if (list[i]) combined.push(list[i]);
   return combined.slice(0, 50);
 }
 
@@ -1382,67 +1380,55 @@ function formatFirstVideo(video) {
 
 function formatSecondVideo(video) {
   if (!video.id) return null;
-
-  const playerUrl =
-    `https://adultembed.com/player/embed/${video.id}/`;
-
-  const title = (video.title || "Video").slice(0, 180);
-  const thumbnail = video.thumbnail || "";
-
+  const playerUrl = `https://adultembed.com/player/embed/${video.id}/`;
+  const title = (video.title || "Video").slice(0, 180), thumbnail = video.thumbnail || "";
+  const result = {
+    type: "article", id: `ae-${video.id}`, title: `🎬 ${title}`.slice(0, 200),
+    description: `مدت: ${video.duration || "نامشخص"}`,
+    input_message_content: { message_text: `🎬 ${title}\n\nمدت ویدئو: ${video.duration || "نامشخص"}` },
+    reply_markup: { inline_keyboard: [[{ text: "▶️ تماشای ویدئو", url: playerUrl }]] }
+  };
+  if (/^https?:\/\//i.test(thumbnail)) { result.thumbnail_url = thumbnail; result.thumbnail_width = 320; result.thumbnail_height = 180; }
+  return result;
+}
+function formatSepiaVideo(video) {
+  const videoId = video.uuid || video.id || video.shortUUID;
+  if (!videoId) return null;
+  const title = String(video.name || "ویدئوی PeerTube").slice(0, 180);
+  const seconds = Number(video.duration || 0);
+  const duration = seconds ? `${Math.floor(seconds / 60)} دقیقه و ${seconds % 60} ثانیه` : "نامشخص";
+  const watchUrl = video.embedUrl || video.url;
+  if (!/^https?:\/\//i.test(watchUrl || "")) return null;
   const result = {
     type: "article",
-    id: `ae-${video.id}`,
-    title: `🎬 ${title}`.slice(0, 200),
-    description: `مدت: ${video.duration || "نامشخص"}`,
-    input_message_content: {
-      message_text:
-        `🎬 ${title}\n\n` +
-        `مدت ویدئو: ${video.duration || "نامشخص"}`
-    },
-    reply_markup: {
-      inline_keyboard: [[
-        {
-          text: "▶️ تماشای ویدئو",
-          url: playerUrl
-        }
-      ]]
-    }
+    id: `sp-${String(videoId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48)}`,
+    title: `🌐 ${title}`.slice(0, 200),
+    description: `PeerTube | مدت: ${duration}`.slice(0, 180),
+    input_message_content: { message_text: `🌐 ${title}\n\nمدت ویدئو: ${duration}\nزبان: ${video.language?.label || "نامشخص"}` },
+    reply_markup: { inline_keyboard: [[
+      { text: "▶️ تماشای ویدئو", url: watchUrl },
+      ...(video.url && video.url !== watchUrl ? [{ text: "صفحه ویدئو", url: video.url }] : [])
+    ]] }
   };
-
-  if (/^https?:\/\//i.test(thumbnail)) {
-    result.thumbnail_url = thumbnail;
-    result.thumbnail_width = 320;
-    result.thumbnail_height = 180;
-  }
-
+  const thumbnail = video.thumbnailUrl || video.previewUrl || "";
+  if (/^https?:\/\//i.test(thumbnail)) { result.thumbnail_url = thumbnail; result.thumbnail_width = 320; result.thumbnail_height = 180; }
   return result;
 }
 
-async function fetchBothVideoSources(query, firstPage, secondPage, perPage = VIDEO_PAGE_SIZE) {
-  const [firstResult, secondResult] = await Promise.allSettled([
+async function fetchBothVideoSources(query, firstPage, secondPage, perPage = VIDEO_PAGE_SIZE, thirdPage = 1, alternateQuery = null) {
+  const [firstResult, secondResult, thirdResult] = await Promise.allSettled([
     searchPixabayVideos(query, firstPage, perPage),
-    searchSecondVideoSource(query, secondPage, perPage)
+    searchSecondVideoSource(query, secondPage, perPage),
+    searchSepiaSearchVideos(query, thirdPage, perPage, alternateQuery)
   ]);
-
-  const firstData =
-    firstResult.status === "fulfilled"
-      ? firstResult.value
-      : { results: [], count: 0 };
-
-  const secondData =
-    secondResult.status === "fulfilled"
-      ? secondResult.value
-      : { results: [], count: 0 };
-
-  if (firstResult.status === "rejected") {
-    console.error("First video source error:", firstResult.reason?.message);
-  }
-
-  if (secondResult.status === "rejected") {
-    console.error("Second video source error:", secondResult.reason?.message);
-  }
-
-  return { firstData, secondData };
+  const empty = { results: [], count: 0 };
+  const firstData = firstResult.status === "fulfilled" ? firstResult.value : empty;
+  const secondData = secondResult.status === "fulfilled" ? secondResult.value : empty;
+  const thirdData = thirdResult.status === "fulfilled" ? thirdResult.value : empty;
+  if (firstResult.status === "rejected") console.error("Pixabay video source error:", firstResult.reason?.message);
+  if (secondResult.status === "rejected") console.error("AdultEmbed video source error:", secondResult.reason?.message);
+  if (thirdResult.status === "rejected") console.error("SepiaSearch video source error:", thirdResult.reason?.message);
+  return { firstData, secondData, thirdData };
 }
 
 async function answerVideoInlineQuery(query, text) {
@@ -1464,42 +1450,26 @@ async function answerVideoInlineQuery(query, text) {
     });
   }
 
-  const { firstPage, secondPage } =
-    parseVideoOffset(query.offset);
+  const { firstPage, secondPage, thirdPage } = parseVideoOffset(query.offset);
 
   const searchTerm = await translateSearchQuery(videoQuery);
 
-  let data = await fetchBothVideoSources(
-    searchTerm,
-    firstPage,
-    secondPage
-  );
+  let data = await fetchBothVideoSources(searchTerm, firstPage, secondPage, VIDEO_PAGE_SIZE, thirdPage, videoQuery);
 
   // If translated search returns nothing, try the original query.
   if (
     data.firstData.results.length === 0 &&
     data.secondData.results.length === 0 &&
+    data.thirdData.results.length === 0 &&
     searchTerm.toLowerCase() !== videoQuery.toLowerCase()
   ) {
-    data = await fetchBothVideoSources(
-      videoQuery,
-      firstPage,
-      secondPage
-    );
+    data = await fetchBothVideoSources(videoQuery, firstPage, secondPage, VIDEO_PAGE_SIZE, thirdPage);
   }
 
-  const firstResults = data.firstData.results
-    .map(formatFirstVideo)
-    .filter(Boolean);
-
-  const secondResults = data.secondData.results
-    .map(formatSecondVideo)
-    .filter(Boolean);
-
-  const results = interleaveVideos(
-    firstResults,
-    secondResults
-  );
+  const firstResults = data.firstData.results.map(formatFirstVideo).filter(Boolean);
+  const secondResults = data.secondData.results.map(formatSecondVideo).filter(Boolean);
+  const thirdResults = data.thirdData.results.map(formatSepiaVideo).filter(Boolean);
+  const results = interleaveVideos(firstResults, secondResults, thirdResults);
 
   if (results.length === 0) {
     results.push({
@@ -1516,8 +1486,8 @@ async function answerVideoInlineQuery(query, text) {
   const hasMoreFirst =
     data.firstData.count > firstPage * VIDEO_PAGE_SIZE;
 
-  const hasMoreSecond =
-    data.secondData.count > secondPage * VIDEO_PAGE_SIZE;
+  const hasMoreSecond = data.secondData.count > secondPage * VIDEO_PAGE_SIZE;
+  const hasMoreThird = data.thirdData.count > thirdPage * VIDEO_PAGE_SIZE;
 
   const answer = {
     inline_query_id: query.id,
@@ -1526,10 +1496,11 @@ async function answerVideoInlineQuery(query, text) {
     is_personal: true
   };
 
-  if (hasMoreFirst || hasMoreSecond) {
+  if (hasMoreFirst || hasMoreSecond || hasMoreThird) {
     answer.next_offset =
       `p${hasMoreFirst ? firstPage + 1 : firstPage}` +
-      `-a${hasMoreSecond ? secondPage + 1 : secondPage}`;
+      `-a${hasMoreSecond ? secondPage + 1 : secondPage}` +
+      `-s${hasMoreThird ? thirdPage + 1 : thirdPage}`;
   }
 
   return telegram("answerInlineQuery", answer);
