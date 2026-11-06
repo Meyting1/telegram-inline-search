@@ -1036,21 +1036,6 @@ async function processChatMessage(message) {
   if (text === "🎬 جستجوی ویدئوها") return selectChatMode(chatId, "video");
 
   const mode = chatModes.get(chatId);
-  if (mode === "audiobook_search") {
-    if (!text || text.startsWith("/")) {
-      return telegram("sendMessage", {
-        chat_id: chatId,
-        text: "لطفاً نام کتاب رو به صورت متن بفرست."
-      });
-    }
-    return sendFreeAudiobooks(chatId, text);
-  }
-  if (mode === "audiobook_menu") {
-    return telegram("sendMessage", {
-      chat_id: chatId,
-      text: "از منوی کتاب صوتی، جستجوی کتاب یا فهرست کتاب‌های رایگان رو انتخاب کن."
-    });
-  }
   if (mode === "football_menu") {
     return telegram("sendMessage", {
       chat_id: chatId,
@@ -2070,17 +2055,17 @@ async function answerInlineQuery(query) {
       return answerVideoInlineQuery(query, text);
     }
 
-    // Web search is replaced by the free audiobook menu in chat.
+    // Web search is not available in this bot; use the football section from the main menu.
     return telegram("answerInlineQuery", {
       inline_query_id: query.id,
       cache_time: 1,
       results: [{
         type: "article",
         id: "search-help",
-        title: "🎧 کتاب صوتی رایگان",
-        description: "برای جستجوی کتاب‌های رایگان، وارد ربات مرورگر شو و بخش کتاب صوتی رو انتخاب کن.",
+        title: "⚽ نتایج فوتبال",
+        description: "برای دیدن نتایج زنده و مسابقات فوتبال، وارد ربات مرورگر شو و بخش نتایج فوتبال رو انتخاب کن.",
         input_message_content: {
-          message_text: "🎧 برای جستجوی کتاب‌های صوتی رایگان، وارد ربات مرورگر شو و بخش «کتاب صوتی» رو انتخاب کن."
+          message_text: "⚽ برای دیدن نتایج زنده و مسابقات فوتبال، وارد ربات مرورگر شو و بخش «نتایج فوتبال» رو انتخاب کن."
         }
       }]
     });
