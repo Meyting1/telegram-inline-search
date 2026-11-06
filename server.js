@@ -21,6 +21,25 @@ const chatModes = new Map();
 const chatImagePages = new Map();
 const chatWebPages = new Map();
 const chatVideoPages = new Map();
+const aiModelByChat = new Map();
+const aiConversations = new Map();
+const aiUsage = new Map();
+
+const AI_DAILY_LIMIT = 10;
+const AI_MODELS = {
+  fast: {
+    label: "⚡ سریع - GPT OSS 20B",
+    id: "openai/gpt-oss-20b"
+  },
+  balanced: {
+    label: "🧠 متعادل - Qwen 3.8 27B",
+    id: "qwen/qwen3.8-27b"
+  },
+  advanced: {
+    label: "🚀 پیشرفته - GPT OSS 120B",
+    id: "openai/gpt-oss-120b"
+  }
+};
 
 const IMAGE_PAGE_SIZE = 30;
 const VIDEO_PAGE_SIZE = 15;
@@ -78,7 +97,8 @@ async function showWelcome(chatId) {
     reply_markup: {
       keyboard: [
         [{ text: "🔎 جستجوی وب" }, { text: "🖼 جستجوی عکس‌ها" }],
-        [{ text: "🎬 جستجوی ویدئوها" }]
+        [{ text: "🎬 جستجوی ویدئوها" }],
+        [{ text: "🤖 چت با هوش مصنوعی" }]
       ],
       resize_keyboard: true,
       is_persistent: true,
@@ -100,12 +120,145 @@ async function selectChatMode(chatId, mode) {
     reply_markup: {
       keyboard: [
         [{ text: "🔎 جستجوی وب" }, { text: "🖼 جستجوی عکس‌ها" }],
-        [{ text: "🎬 جستجوی ویدئوها" }]
+        [{ text: "🎬 جستجوی ویدئوها" }],
+        [{ text: "🤖 چت با هوش مصنوعی" }]
       ],
       resize_keyboard: true,
       is_persistent: true
     }
   });
+}
+
+async function showAiMenu(chatId) {
+  chatModes.set(chatId, "ai_select");
+  await telegram("sendMessage", {
+    chat_id: chatId,
+    text:
+      "🤖 یکی از مدل‌های هوش مصنوعی رو انتخاب کن:\n\n" +
+      "⚡ سریع: مناسب سؤال‌های روزمره\n" +
+      "🧠 متعادل: مناسب ترجمه، نوشتن و تحلیل معمولی\n" +
+      "🚀 پیشرفته: مناسب سؤال‌های پیچیده‌تر",
+    reply_markup: {
+      keyboard: [
+        [{ text: AI_MODELS.fast.label }],
+        [{ text: AI_MODELS.balanced.label }],
+        [{ text: AI_MODELS.advanced.label }],
+        [{ text: "🔙 منوی اصلی" }]
+      ],
+      resize_keyboard: true,
+      is_persistent: true
+    }
+  });
+}
+
+async function selectAiModel(chatId, modelKey) {
+  const selected = AI_MODELS[modelKey];
+  if (!selected) return showAiMenu(chatId);
+
+  aiModelByChat.set(chatId, selected.id);
+  chatModes.set(chatId, "ai");
+  await telegram("sendMessage", {
+    chat_id: chatId,
+    text:
+      "✅ مدل انتخاب شد: " + selected.label + "\n\n" +
+      "حالا سؤالت رو بفرست تا همین‌جا جواب بگیری.\n" +
+      "سهمیه آزمایشی هر کاربر: روزانه " + AI_DAILY_LIMIT + " پیام.",
+    reply_markup: {
+      keyboard: [
+        [{ text: "🔄 تغییر مدل" }, { text: "🆕 گفتگوی جدید" }],
+        [{ text: "🔙 منوی اصلی" }]
+      ],
+      resize_keyboard: true,
+      is_persistent: true,
+      input_field_placeholder: "پیامت رو برای هوش مصنوعی بنویس..."
+    }
+  });
+}
+
+async function handleAiMessage(chatId, userId, userText) {
+  if (!process.env.GROQ_API_KEY) {
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "اتصال هوش مصنوعی هنوز کامل تنظیم نشده. لطفاً بعداً دوباره امتحان کن."
+    });
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const usage = aiUsage.get(userId);
+  const currentUsage = usage && usage.day === today ? usage.count : 0;
+
+  if (currentUsage >= AI_DAILY_LIMIT) {
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text:
+        "⏳ سهمیه رایگان امروزت تموم شده (" + AI_DAILY_LIMIT + " پیام).\n" +
+        "فردا دوباره می‌تونی رایگان از هوش مصنوعی استفاده کنی."
+    });
+  }
+
+  const model = aiModelByChat.get(chatId) || AI_MODELS.fast.id;
+  const history = aiConversations.get(chatId) || [];
+  const nextHistory = [...history, { role: "user", content: userText }].slice(-10);
+
+  try {
+    const response = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are Moroorgar's helpful assistant. Reply in the same language as the user, especially Persian when the user writes Persian. Be accurate, friendly, and concise. If you are unsure, say so."
+          },
+          ...nextHistory
+        ],
+        max_completion_tokens: 900,
+        temperature: 0.7
+      },
+      {
+        headers: {
+          Authorization: "Bearer " + process.env.GROQ_API_KEY,
+          "Content-Type": "application/json"
+        },
+        timeout: 45000
+      }
+    );
+
+    const answer = response.data?.choices?.[0]?.message?.content?.trim();
+    if (!answer) throw new Error("Empty AI response");
+
+    aiConversations.set(chatId, [
+      ...nextHistory,
+      { role: "assistant", content: answer }
+    ].slice(-10));
+
+    aiUsage.set(userId, {
+      day: today,
+      count: currentUsage + 1
+    });
+
+    const chunks = answer.match(/[\s\S]{1,3800}/g) || [answer];
+    for (const chunk of chunks) {
+      await telegram("sendMessage", {
+        chat_id: chatId,
+        text: chunk
+      });
+    }
+  } catch (error) {
+    console.error("Groq AI error:", error.response?.data || error.message);
+    const status = error.response?.status;
+    let errorText = "فعلاً دریافت پاسخ از هوش مصنوعی ناموفق بود. کمی بعد دوباره امتحان کن.";
+    if (status === 401 || status === 403) {
+      errorText = "کلید اتصال هوش مصنوعی معتبر نیست یا دسترسی آن تأیید نشده. مدیر ربات باید تنظیمات Groq را بررسی کند.";
+    } else if (status === 429) {
+      errorText = "سهمیه یا محدودیت سرعت سرویس هوش مصنوعی فعلاً پر شده. کمی بعد دوباره امتحان کن.";
+    }
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: errorText
+    });
+  }
 }
 
 async function processChatMessage(message) {
@@ -117,12 +270,49 @@ async function processChatMessage(message) {
   if (command === "/web") return selectChatMode(chatId, "web");
   if (command === "/img") return selectChatMode(chatId, "image");
   if (command === "/vid") return selectChatMode(chatId, "video");
+  if (command === "/ai") return showAiMenu(chatId);
+
+  if (text === "🤖 چت با هوش مصنوعی") return showAiMenu(chatId);
+  if (text === "🔙 منوی اصلی") return showWelcome(chatId);
+  if (text === "🔄 تغییر مدل") return showAiMenu(chatId);
+  if (text === "🆕 گفتگوی جدید") {
+    aiConversations.delete(chatId);
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "گفتگوی جدید شروع شد. سؤالت رو بفرست."
+    });
+    return;
+  }
+  if (text === AI_MODELS.fast.label) return selectAiModel(chatId, "fast");
+  if (text === AI_MODELS.balanced.label) return selectAiModel(chatId, "balanced");
+  if (text === AI_MODELS.advanced.label) return selectAiModel(chatId, "advanced");
 
   if (text === "🔎 جستجوی وب") return selectChatMode(chatId, "web");
   if (text === "🖼 جستجوی عکس‌ها") return selectChatMode(chatId, "image");
   if (text === "🎬 جستجوی ویدئوها") return selectChatMode(chatId, "video");
 
   const mode = chatModes.get(chatId);
+  if (mode === "ai_select") {
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "لطفاً اول یکی از سه مدل نمایش‌داده‌شده رو انتخاب کن."
+    });
+    return;
+  }
+  if (mode === "ai") {
+    if (!text || text.startsWith("/")) {
+      await telegram("sendMessage", {
+        chat_id: chatId,
+        text: "لطفاً پیام متنی‌ات رو برای هوش مصنوعی بفرست."
+      });
+      return;
+    }
+    await telegram("sendChatAction", {
+      chat_id: chatId,
+      action: "typing"
+    });
+    return handleAiMessage(chatId, message.from?.id || chatId, text);
+  }
   if (!mode) {
     await telegram("sendMessage", {
       chat_id: chatId,
@@ -1216,7 +1406,8 @@ async function startBot() {
       { command: "start", description: "نمایش منوی اصلی" },
       { command: "web", description: "جست‌وجوی وب" },
       { command: "img", description: "جست‌وجوی عکس‌ها" },
-      { command: "vid", description: "جست‌وجوی ویدئوها" }
+      { command: "vid", description: "جست‌وجوی ویدئوها" },
+      { command: "ai", description: "گفتگو با هوش مصنوعی" }
     ]
   });
 
