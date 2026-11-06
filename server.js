@@ -368,7 +368,7 @@ async function sendFootballFixtures(chatId, kind) {
     } else {
       // Use the proven single-date filter instead of from/to.
       // Fetch a 15-day window in small batches to avoid API bursts.
-      const dates = Array.from({ length: 15 }, (_, index) => tehranDateOffset(index - 7));
+      const dates = Array.from({ length: 3 }, (_, index) => tehranDateOffset(index - 2));
       const dailyFixtures = [];
       for (let index = 0; index < dates.length; index += 4) {
         const batch = dates.slice(index, index + 4);
