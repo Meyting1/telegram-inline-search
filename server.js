@@ -302,7 +302,7 @@ async function generateImageForChat(chatId, requestText) {
   }
 }
 
-async function handleAiMessage(chatId, userId, userText) {
+async function handleAiMessage(chatId, userId, userText, forceProvider = null) {
   const groqKey = process.env.GROQ_API_KEY;
   const openRouterKey = process.env.OPENROUTER_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
@@ -386,7 +386,11 @@ async function handleAiMessage(chatId, userId, userText) {
   let answer = "";
   let lastError = null;
 
-  for (const provider of providers) {
+  const selectedProviders = forceProvider
+    ? providers.filter(provider => provider.name === forceProvider)
+    : providers;
+
+  for (const provider of selectedProviders) {
     try {
       const response = await axios.post(
         provider.url,
@@ -462,6 +466,12 @@ async function processChatMessage(message) {
   if (command === "/img") return selectChatMode(chatId, "image");
   if (command === "/vid") return selectChatMode(chatId, "video");
   if (command === "/ai") return showAiMenu(chatId);
+  if (command === "/gemini-test") {
+    const testText = text.replace(/^\/gemini-test(?:@\w+)?\s*/i, "").trim() ||
+      "سلام. لطفاً در یک جمله خودت را معرفی کن.";
+    await telegram("sendChatAction", { chat_id: chatId, action: "typing" });
+    return handleAiMessage(chatId, message.from?.id || chatId, testText, "Gemini");
+  }
   if (command === "/draw" || command === "/image") {
     return generateImageForChat(chatId, text.replace(/^\/(?:draw|image)(?:@\w+)?\s*/i, ""));
   }
