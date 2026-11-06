@@ -1019,7 +1019,7 @@ async function sendChatWebPage(token) {
   for (let i = 0; i < batch.length; i++) {
     const p = batch[i];
     const title = p.name || "بدون عنوان";
-    const snippet = (p.snippet || p.text || "").trim().slice(0, 650);
+    const snippet = summarizeWebText(p.text || p.snippet, 600);
     await telegram("sendMessage", {
       chat_id: state.chatId,
       text: `🔎 ${start + i + 1}. ${title}\\n\\n${snippet}\\n\\n${p.url}`,
@@ -1157,7 +1157,11 @@ async function sendChatImagePage(chatId, query, page, token) {
 async function searchWeb(query, count = 8) {
   const response = await axios.post(
     "https://api.langsearch.com/v1/web-search",
-    { query, count: Math.min(50, Math.max(1, count)) },
+    {
+      query,
+      count: Math.min(20, Math.max(1, count)),
+      contents: { text: { maxCharacters: 1200 } }
+    },
     {
       headers: {
         Authorization: `Bearer ${LANGSEARCH_KEY}`,
@@ -1174,6 +1178,20 @@ async function searchWeb(query, count = 8) {
   }
 
   return payload.data?.webPages?.value || [];
+}
+
+function summarizeWebText(value, maxLength = 600) {
+  const text = String(value || "").replace(/\\s+/g, " ").trim();
+  if (!text) return "خلاصه‌ای از محتوای این صفحه در دسترس نیست.";
+  const sentences = text.match(/[^.!?؟]+[.!?؟]?/g) || [text];
+  let summary = "";
+  for (const sentence of sentences) {
+    const next = (summary + " " + sentence).trim();
+    if (next.length > maxLength) break;
+    summary = next;
+  }
+  if (!summary) summary = text.slice(0, maxLength);
+  return summary.length < text.length ? summary.trim() + "…" : summary.trim();
 }
 
 // ---------------- IMAGE SEARCH ----------------
@@ -1908,7 +1926,7 @@ async function answerInlineQuery(query) {
       const title = page.name || "Untitled page";
       const url = page.url || "";
       const description = (
-        page.snippet || page.text || "No description available."
+        summarizeWebText(page.text || page.snippet, 600) || "No description available."
       ).trim();
 
       if (!/^https?:\/\//i.test(url)) return null;
