@@ -3,6 +3,7 @@ const express = require("express");
 const axios = require("axios");
 const cheerio = require("cheerio");
 const crypto = require("crypto");
+const sharp = require("sharp");
 
 const app = express();
 app.use(express.json());
@@ -23,6 +24,7 @@ const chatWebPages = new Map();
 const chatVideoPages = new Map();
 const aiModelByChat = new Map();
 const aiConversations = new Map();
+const pendingEditPhotos = new Map();
 
 const AI_MODELS = {
   fast: {
@@ -37,6 +39,15 @@ const AI_MODELS = {
     label: "🚀 پیشرفته - GPT OSS 120B",
     id: "openai/gpt-oss-120b"
   }
+};
+
+const PHOTO_EDIT_STYLES = {
+  portrait: { label: "👤 پرتره حرفه‌ای", prompt: "Transform the person in the input photo into a polished professional studio portrait. Preserve the same person's recognizable identity, facial structure, age, hairstyle, skin tone, and natural features. Use flattering soft studio lighting, a refined background, realistic skin texture, and professional portrait photography. Do not add people or change who the person is." },
+  cartoon: { label: "🎭 کارتونی", prompt: "Transform the person in the input photo into a beautiful high-quality 3D animated cartoon portrait. Preserve the person's recognizable identity, facial structure, hairstyle, and key features while applying a polished expressive animated-film art style. Keep the composition focused on the same person." },
+  cinematic: { label: "🎬 سینمایی", prompt: "Give the input photo a premium cinematic film look with atmospheric lighting, refined contrast, rich but natural color grading, subtle depth, and professional movie-still composition. Preserve the same subject, identity, facial features, pose, and important scene details." },
+  color: { label: "🌈 اصلاح رنگ", prompt: "Perform professional natural photo correction on the input image. Improve white balance, exposure, color accuracy, contrast, highlights, shadows, and moderate saturation. Reduce visible noise and improve clarity while preserving the original people, identity, objects, composition, and realistic appearance. Do not stylize or replace anything." },
+  restore: { label: "🛠 ترمیم عکس قدیمی", prompt: "Carefully restore the old or damaged photograph. Remove scratches, dust, stains, creases, fading, and image deterioration; improve clarity and tonal balance. If it is black and white, apply subtle historically plausible natural colorization. Preserve the original composition, recognizable facial identities, expressions, clothing, and period details. Do not invent or modernize details." },
+  background: { label: "🖼 تغییر پس‌زمینه", prompt: "Replace the background of the input photo with an elegant professional photographic background that complements the subject. Carefully preserve the same person's identity, face, hair, clothing, body shape, pose, and edges. Use realistic lighting and natural integration. Do not alter the subject." }
 };
 
 const IMAGE_PAGE_SIZE = 30;
@@ -63,7 +74,7 @@ app.post("/telegram-webhook", (req, res) => {
   res.sendStatus(200);
   const update = req.body;
 
-  if (update.message?.text) {
+  if (update.message?.text || update.message?.photo) {
     processChatMessage(update.message).catch(console.error);
   }
 
@@ -170,13 +181,157 @@ async function showAiModeMenu(chatId) {
     reply_markup: {
       keyboard: [
         [{ text: "💬 چت متنی" }],
-        [{ text: "🖼 ساخت تصویر" }, { text: "🎬 ساخت ویدیو" }],
+        [{ text: "🖼 ساخت تصویر" }, { text: "🎨 ویرایش عکس" }],
         [{ text: "🔄 تغییر مدل" }, { text: "🔙 منوی اصلی" }]
       ],
       resize_keyboard: true,
       is_persistent: true
     }
   });
+}
+
+async function showPhotoEditMenu(chatId, intro = null) {
+  chatModes.set(chatId, "ai_edit_select");
+  await telegram("sendMessage", {
+    chat_id: chatId,
+    text: (intro ? intro + "\n\n" : "") +
+      "🎨 نوع ویرایش رو انتخاب کن. می‌تونی چند سبک مختلف رو روی همین عکس امتحان کنی:",
+    reply_markup: {
+      keyboard: [
+        [{ text: PHOTO_EDIT_STYLES.portrait.label }, { text: PHOTO_EDIT_STYLES.cartoon.label }],
+        [{ text: PHOTO_EDIT_STYLES.cinematic.label }, { text: PHOTO_EDIT_STYLES.color.label }],
+        [{ text: PHOTO_EDIT_STYLES.restore.label }, { text: PHOTO_EDIT_STYLES.background.label }],
+        [{ text: "📷 ارسال عکس جدید" }, { text: "🔙 منوی اصلی" }]
+      ],
+      resize_keyboard: true,
+      is_persistent: true
+    }
+  });
+}
+
+async function handleIncomingEditPhoto(message) {
+  const chatId = message.chat.id;
+  const mode = chatModes.get(chatId);
+  if (mode !== "ai_edit_wait_photo" && mode !== "ai_edit_select") {
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "برای ویرایش عکس، اول از منوی هوش مصنوعی گزینه «🎨 ویرایش عکس» رو انتخاب کن؛ بعد عکست رو بفرست."
+    });
+  }
+  const photo = message.photo[message.photo.length - 1];
+  if (!photo?.file_id) {
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "نتونستم عکس رو دریافت کنم. لطفاً دوباره به‌صورت عکس ارسالش کن."
+    });
+  }
+  pendingEditPhotos.set(chatId, photo.file_id);
+  return showPhotoEditMenu(chatId, "✅ عکست دریافت شد.");
+}
+
+async function editPhotoForChat(chatId, styleKey) {
+  const style = PHOTO_EDIT_STYLES[styleKey];
+  const fileId = pendingEditPhotos.get(chatId);
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  if (!style || !fileId) {
+    return telegram("sendMessage", { chat_id: chatId, text: "اول یک عکس بفرست تا بتونم ویرایشش کنم." });
+  }
+  if (!accountId || !apiToken) {
+    return telegram("sendMessage", { chat_id: chatId, text: "اتصال سرویس ویرایش عکس هنوز تنظیم نشده است." });
+  }
+
+  let statusMessageId = null;
+  try {
+    const status = await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "⏳ عکس دریافت شد؛ در حال ویرایش تصویرت هستم. لطفاً کمی صبر کن..."
+    });
+    statusMessageId = status.result?.message_id || null;
+  } catch (statusError) {
+    console.error("Could not send photo-edit status:", statusError.message);
+  }
+
+  try {
+    await telegram("sendChatAction", { chat_id: chatId, action: "upload_photo" });
+    const fileInfo = await telegram("getFile", { file_id: fileId });
+    const filePath = fileInfo.result?.file_path;
+    if (!filePath) throw new Error("Telegram did not return a photo file path");
+
+    const download = await axios.get(
+      "https://api.telegram.org/file/bot" + BOT_TOKEN + "/" + filePath,
+      { responseType: "arraybuffer", timeout: 30000, maxContentLength: 20 * 1024 * 1024 }
+    );
+    const sourceBuffer = Buffer.from(download.data);
+    const processedBuffer = await sharp(sourceBuffer)
+      .rotate()
+      .resize({ width: 510, height: 510, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 88 })
+      .toBuffer();
+
+    const dimensions = await sharp(processedBuffer).metadata();
+    const ratio = (dimensions.width || 1) / (dimensions.height || 1);
+    const longestSide = 768;
+    const outputWidth = ratio >= 1 ? longestSide : Math.max(256, Math.round(longestSide * ratio));
+    const outputHeight = ratio >= 1 ? Math.max(256, Math.round(longestSide / ratio)) : longestSide;
+
+    const form = new FormData();
+    form.append("prompt", style.prompt);
+    form.append("input_image_0", new Blob([processedBuffer], { type: "image/jpeg" }), "morvarbot-source.jpg");
+    form.append("width", String(outputWidth));
+    form.append("height", String(outputHeight));
+
+    const endpoint = "https://api.cloudflare.com/client/v4/accounts/" +
+      accountId + "/ai/run/@cf/black-forest-labs/flux-2-klein-4b";
+    const result = await axios.post(endpoint, form, {
+      headers: { Authorization: "Bearer " + apiToken },
+      timeout: 180000,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity
+    });
+
+    const imageBase64 = result.data?.result?.image;
+    if (!imageBase64) {
+      throw new Error(result.data?.errors?.[0]?.message || "Cloudflare returned no edited image");
+    }
+    const imageBuffer = Buffer.from(imageBase64, "base64");
+    const sendForm = new FormData();
+    sendForm.append("chat_id", String(chatId));
+    sendForm.append("caption", "🎨 نتیجه ویرایش عکس — " + style.label);
+    sendForm.append("photo", new Blob([imageBuffer], { type: "image/jpeg" }), "morvarbot-edited-photo.jpg");
+    await axios.post(TELEGRAM_API + "/sendPhoto", sendForm, { timeout: 60000 });
+
+    if (statusMessageId) {
+      try {
+        await telegram("deleteMessage", { chat_id: chatId, message_id: statusMessageId });
+      } catch (deleteError) {
+        console.error("Could not delete photo-edit status:", deleteError.message);
+      }
+    }
+    console.log("Photo edited with Cloudflare FLUX.2 Klein 4B:", styleKey);
+    return showPhotoEditMenu(
+      chatId,
+      "✅ ویرایش انجام شد! می‌تونی سبک دیگه‌ای رو روی همین عکس امتحان کنی یا عکس جدید بفرستی."
+    );
+  } catch (error) {
+    if (statusMessageId) {
+      try {
+        await telegram("deleteMessage", { chat_id: chatId, message_id: statusMessageId });
+      } catch (deleteError) {
+        console.error("Could not delete photo-edit status:", deleteError.message);
+      }
+    }
+    const status = error.response?.status;
+    console.error("Cloudflare photo editing error:", error.response?.data || error.message);
+    let message = "ویرایش عکس ناموفق بود. لطفاً دوباره امتحان کن یا عکس دیگری بفرست.";
+    if (status === 401 || status === 403) {
+      message = "دسترسی Cloudflare تأیید نشد؛ کلید API و مجوز Workers AI باید بررسی شود.";
+    } else if (status === 429) {
+      message = "سهمیه رایگان روزانه هوش مصنوعی Cloudflare فعلاً تمام شده؛ بعد از صفر شدن سهمیه دوباره امتحان کن.";
+    }
+    await telegram("sendMessage", { chat_id: chatId, text: message });
+    return showPhotoEditMenu(chatId, "می‌تونی دوباره همین سبک یا یک سبک دیگه رو امتحان کنی.");
+  }
 }
 
 async function generateImageForChat(chatId, requestText) {
@@ -461,6 +616,8 @@ async function processChatMessage(message) {
   const text = (message.text || "").trim();
   const command = text.split(/\s+/)[0].split("@")[0].toLowerCase();
 
+  if (message.photo?.length) return handleIncomingEditPhoto(message);
+
   if (command === "/start") return showWelcome(chatId);
   if (command === "/web") return selectChatMode(chatId, "web");
   if (command === "/img") return selectChatMode(chatId, "image");
@@ -477,7 +634,10 @@ async function processChatMessage(message) {
   }
 
   if (text === "🤖 چت با هوش مصنوعی") return showAiMenu(chatId);
-  if (text === "🔙 منوی اصلی") return showWelcome(chatId);
+  if (text === "🔙 منوی اصلی") {
+    pendingEditPhotos.delete(chatId);
+    return showWelcome(chatId);
+  }
   if (text === "🔄 تغییر مدل") return showAiMenu(chatId);
   if (text === "💬 چت متنی") {
     chatModes.set(chatId, "ai");
@@ -512,14 +672,26 @@ async function processChatMessage(message) {
     });
     return;
   }
-  if (text === "🎬 ساخت ویدیو") {
-    chatModes.set(chatId, "ai_mode_select");
+  if (text === "🎨 ویرایش عکس") {
+    chatModes.set(chatId, "ai_edit_wait_photo");
     await telegram("sendMessage", {
       chat_id: chatId,
-      text: "🎬 قابلیت ساخت ویدیو هنوز فعال نشده. به‌محض انتخاب سرویس مناسب، این بخش رو اضافه می‌کنیم."
+      text: "🎨 حالت ویرایش عکس فعاله. حالا عکس موردنظرت رو به‌صورت Photo (نه فایل) بفرست."
     });
     return;
   }
+  if (text === "📷 ارسال عکس جدید") {
+    pendingEditPhotos.delete(chatId);
+    chatModes.set(chatId, "ai_edit_wait_photo");
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "عکس جدیدت رو به‌صورت Photo بفرست."
+    });
+    return;
+  }
+  const selectedPhotoStyle = Object.entries(PHOTO_EDIT_STYLES)
+    .find(([, style]) => style.label === text);
+  if (selectedPhotoStyle) return editPhotoForChat(chatId, selectedPhotoStyle[0]);
   if (text === "🆕 گفتگوی جدید") {
     aiConversations.delete(chatId);
     await telegram("sendMessage", {
@@ -547,7 +719,21 @@ async function processChatMessage(message) {
   if (mode === "ai_mode_select") {
     await telegram("sendMessage", {
       chat_id: chatId,
-      text: "لطفاً یکی از گزینه‌های چت متنی، ساخت تصویر یا ساخت ویدیو رو از منوی پایین انتخاب کن."
+      text: "لطفاً یکی از گزینه‌های چت متنی، ساخت تصویر یا ویرایش عکس رو از منوی پایین انتخاب کن."
+    });
+    return;
+  }
+  if (mode === "ai_edit_wait_photo") {
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "لطفاً عکس رو به‌صورت Photo بفرست تا بتونم ویرایشش کنم."
+    });
+    return;
+  }
+  if (mode === "ai_edit_select") {
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "لطفاً یکی از شش سبک ویرایش رو از منوی پایین انتخاب کن."
     });
     return;
   }
