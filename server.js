@@ -176,7 +176,10 @@ async function selectAiModel(chatId, modelKey) {
 }
 
 async function handleAiMessage(chatId, userId, userText) {
-  if (!process.env.GROQ_API_KEY) {
+  const groqKey = process.env.GROQ_API_KEY;
+  const openRouterKey = process.env.OPENROUTER_API_KEY;
+
+  if (!groqKey && !openRouterKey) {
     return telegram("sendMessage", {
       chat_id: chatId,
       text: "اتصال هوش مصنوعی هنوز کامل تنظیم نشده. لطفاً بعداً دوباره امتحان کن."
@@ -199,64 +202,107 @@ async function handleAiMessage(chatId, userId, userText) {
   const model = aiModelByChat.get(chatId) || AI_MODELS.fast.id;
   const history = aiConversations.get(chatId) || [];
   const nextHistory = [...history, { role: "user", content: userText }].slice(-10);
+  const messages = [
+    {
+      role: "system",
+      content:
+        "You are the AI assistant inside the Persian Telegram bot named «مرورگر» (MorvarBot). Your name is مرورگر. Never claim to be ChatGPT, OpenAI, Groq, or another provider/model. If asked who you are, say you are the AI assistant of مرورگر. Reply in the user's language, especially Persian when they write Persian. Be accurate, friendly, and concise. If unsure, say so."
+    },
+    ...nextHistory
+  ];
 
-  try {
-    const response = await axios.post(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
+  const providers = [];
+  if (groqKey) {
+    providers.push({
+      name: "Groq",
+      url: "https://api.groq.com/openai/v1/chat/completions",
+      key: groqKey,
+      body: {
         model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are the AI assistant inside the Persian Telegram bot named «مرورگر» (MorvarBot). Your name is مرورگر. Never claim to be ChatGPT, OpenAI, Groq, or another provider/model. If asked who you are, say you are the AI assistant of مرورگر. Reply in the user's language, especially Persian when they write Persian. Be accurate, friendly, and concise. If unsure, say so."
-          },
-          ...nextHistory
-        ],
+        messages,
         max_completion_tokens: 900,
         temperature: 0.7
       },
-      {
-        headers: {
-          Authorization: "Bearer " + process.env.GROQ_API_KEY,
-          "Content-Type": "application/json"
-        },
-        timeout: 45000
-      }
-    );
-
-    const answer = response.data?.choices?.[0]?.message?.content?.trim();
-    if (!answer) throw new Error("Empty AI response");
-
-    aiConversations.set(chatId, [
-      ...nextHistory,
-      { role: "assistant", content: answer }
-    ].slice(-10));
-
-    aiUsage.set(userId, {
-      day: today,
-      count: currentUsage + 1
+      headers: {}
     });
+  }
+  if (openRouterKey) {
+    providers.push({
+      name: "OpenRouter",
+      url: "https://openrouter.ai/api/v1/chat/completions",
+      key: openRouterKey,
+      body: {
+        model: "openrouter/free",
+        messages,
+        max_tokens: 900
+      },
+      headers: {
+        "HTTP-Referer": "https://moroorgarbot.onrender.com",
+        "X-Title": "MorvarBot"
+      }
+    });
+  }
 
-    const chunks = answer.match(/[\s\S]{1,3800}/g) || [answer];
-    for (const chunk of chunks) {
-      await telegram("sendMessage", {
-        chat_id: chatId,
-        text: chunk
-      });
+  let answer = "";
+  let lastError = null;
+
+  for (const provider of providers) {
+    try {
+      const response = await axios.post(
+        provider.url,
+        provider.body,
+        {
+          headers: {
+            Authorization: "Bearer " + provider.key,
+            "Content-Type": "application/json",
+            ...provider.headers
+          },
+          timeout: 60000
+        }
+      );
+
+      answer = response.data?.choices?.[0]?.message?.content?.trim();
+      if (!answer) throw new Error("Empty AI response");
+      console.log("AI response served by:", provider.name);
+      break;
+    } catch (error) {
+      lastError = error;
+      console.error(
+        provider.name + " AI error:",
+        error.response?.data || error.message
+      );
     }
-  } catch (error) {
-    console.error("Groq AI error:", error.response?.data || error.message);
-    const status = error.response?.status;
-    let errorText = "فعلاً دریافت پاسخ از هوش مصنوعی ناموفق بود. کمی بعد دوباره امتحان کن.";
+  }
+
+  if (!answer) {
+    const status = lastError?.response?.status;
+    let errorText = "فعلاً سرویس‌های هوش مصنوعی پاسخگو نیستند. کمی بعد دوباره امتحان کن.";
     if (status === 401 || status === 403) {
-      errorText = "کلید اتصال هوش مصنوعی معتبر نیست یا دسترسی آن تأیید نشده. مدیر ربات باید تنظیمات Groq را بررسی کند.";
+      errorText = "یکی از کلیدهای اتصال هوش مصنوعی معتبر نیست یا دسترسی آن تأیید نشده. تنظیمات سرویس‌ها باید بررسی شود.";
     } else if (status === 429) {
-      errorText = "سهمیه یا محدودیت سرعت سرویس هوش مصنوعی فعلاً پر شده. کمی بعد دوباره امتحان کن.";
+      errorText = "محدودیت درخواست سرویس‌های رایگان فعلاً پر شده. کمی بعد دوباره امتحان کن.";
     }
-    await telegram("sendMessage", {
+    return telegram("sendMessage", {
       chat_id: chatId,
       text: errorText
+    });
+  }
+
+  aiConversations.set(chatId, [
+    ...nextHistory,
+    { role: "assistant", content: answer }
+  ].slice(-10));
+
+  aiUsage.set(userId, {
+    day: today,
+    count: currentUsage + 1
+  });
+
+  const chunks = answer.match(/[\s\S]{1,3800}/g) || [answer];
+  for (const chunk of chunks) {
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: chunk
     });
   }
 }
