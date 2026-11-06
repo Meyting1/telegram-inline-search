@@ -154,20 +154,27 @@ async function selectAiModel(chatId, modelKey) {
   if (!selected) return showAiMenu(chatId);
 
   aiModelByChat.set(chatId, selected.id);
-  chatModes.set(chatId, "ai");
+  return showAiModeMenu(chatId);
+}
+
+async function showAiModeMenu(chatId) {
+  chatModes.set(chatId, "ai_mode_select");
+  const selectedModel = Object.values(AI_MODELS).find(
+    model => model.id === aiModelByChat.get(chatId)
+  );
   await telegram("sendMessage", {
     chat_id: chatId,
     text:
-      "✅ مدل انتخاب شد: " + selected.label + "\n\n" +
-      "حالا سؤالت رو بفرست تا همین‌جا جواب بگیری.",
+      "✅ مدل انتخاب‌شده: " + (selectedModel?.label || "هوش مصنوعی") + "\n\n" +
+      "حالا مشخص کن چه کاری می‌خوای انجام بدی:",
     reply_markup: {
       keyboard: [
-        [{ text: "🔄 تغییر مدل" }, { text: "🆕 گفتگوی جدید" }],
-        [{ text: "🔙 منوی اصلی" }]
+        [{ text: "💬 چت متنی" }],
+        [{ text: "🖼 ساخت تصویر" }, { text: "🎬 ساخت ویدیو" }],
+        [{ text: "🔄 تغییر مدل" }, { text: "🔙 منوی اصلی" }]
       ],
       resize_keyboard: true,
-      is_persistent: true,
-      input_field_placeholder: "پیامت رو برای هوش مصنوعی بنویس..."
+      is_persistent: true
     }
   });
 }
@@ -426,6 +433,47 @@ async function processChatMessage(message) {
   if (text === "🤖 چت با هوش مصنوعی") return showAiMenu(chatId);
   if (text === "🔙 منوی اصلی") return showWelcome(chatId);
   if (text === "🔄 تغییر مدل") return showAiMenu(chatId);
+  if (text === "💬 چت متنی") {
+    chatModes.set(chatId, "ai");
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "💬 حالت چت متنی فعاله. سؤالت رو بفرست.",
+      reply_markup: {
+        keyboard: [
+          [{ text: "🔄 تغییر مدل" }, { text: "🆕 گفتگوی جدید" }],
+          [{ text: "🔙 منوی اصلی" }]
+        ],
+        resize_keyboard: true,
+        is_persistent: true,
+        input_field_placeholder: "پیامت رو برای هوش مصنوعی بنویس..."
+      }
+    });
+    return;
+  }
+  if (text === "🖼 ساخت تصویر") {
+    chatModes.set(chatId, "ai_image");
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "🖼 حالت ساخت تصویر فعاله. توضیح تصویرت رو بفرست؛ مثلاً: یک شهر آینده‌نگر در شب، با نورهای نئونی.",
+      reply_markup: {
+        keyboard: [
+          [{ text: "🔄 تغییر مدل" }, { text: "🔙 منوی اصلی" }]
+        ],
+        resize_keyboard: true,
+        is_persistent: true,
+        input_field_placeholder: "توضیح تصویر رو بنویس..."
+      }
+    });
+    return;
+  }
+  if (text === "🎬 ساخت ویدیو") {
+    chatModes.set(chatId, "ai_mode_select");
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "🎬 قابلیت ساخت ویدیو هنوز فعال نشده. به‌محض انتخاب سرویس مناسب، این بخش رو اضافه می‌کنیم."
+    });
+    return;
+  }
   if (text === "🆕 گفتگوی جدید") {
     aiConversations.delete(chatId);
     await telegram("sendMessage", {
@@ -449,6 +497,23 @@ async function processChatMessage(message) {
       text: "لطفاً اول یکی از سه مدل نمایش‌داده‌شده رو انتخاب کن."
     });
     return;
+  }
+  if (mode === "ai_mode_select") {
+    await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "لطفاً یکی از گزینه‌های چت متنی، ساخت تصویر یا ساخت ویدیو رو از منوی پایین انتخاب کن."
+    });
+    return;
+  }
+  if (mode === "ai_image") {
+    if (!text || text.startsWith("/")) {
+      await telegram("sendMessage", {
+        chat_id: chatId,
+        text: "لطفاً توضیح تصویر رو به صورت متن بفرست."
+      });
+      return;
+    }
+    return generateImageForChat(chatId, text);
   }
   if (mode === "ai") {
     if (!text || text.startsWith("/")) {
