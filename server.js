@@ -23,9 +23,7 @@ const chatWebPages = new Map();
 const chatVideoPages = new Map();
 const aiModelByChat = new Map();
 const aiConversations = new Map();
-const aiUsage = new Map();
 
-const AI_DAILY_LIMIT = 10;
 const AI_MODELS = {
   fast: {
     label: "⚡ سریع - GPT OSS 20B",
@@ -162,7 +160,6 @@ async function selectAiModel(chatId, modelKey) {
     text:
       "✅ مدل انتخاب شد: " + selected.label + "\n\n" +
       "حالا سؤالت رو بفرست تا همین‌جا جواب بگیری.\n" +
-      "سهمیه آزمایشی هر کاربر: روزانه " + AI_DAILY_LIMIT + " پیام.",
     reply_markup: {
       keyboard: [
         [{ text: "🔄 تغییر مدل" }, { text: "🆕 گفتگوی جدید" }],
@@ -183,19 +180,6 @@ async function handleAiMessage(chatId, userId, userText) {
     return telegram("sendMessage", {
       chat_id: chatId,
       text: "اتصال هوش مصنوعی هنوز کامل تنظیم نشده. لطفاً بعداً دوباره امتحان کن."
-    });
-  }
-
-  const today = new Date().toISOString().slice(0, 10);
-  const usage = aiUsage.get(userId);
-  const currentUsage = usage && usage.day === today ? usage.count : 0;
-
-  if (currentUsage >= AI_DAILY_LIMIT) {
-    return telegram("sendMessage", {
-      chat_id: chatId,
-      text:
-        "⏳ سهمیه رایگان امروزت تموم شده (" + AI_DAILY_LIMIT + " پیام).\n" +
-        "فردا دوباره می‌تونی رایگان از هوش مصنوعی استفاده کنی."
     });
   }
 
@@ -292,11 +276,6 @@ async function handleAiMessage(chatId, userId, userText) {
     ...nextHistory,
     { role: "assistant", content: answer }
   ].slice(-10));
-
-  aiUsage.set(userId, {
-    day: today,
-    count: currentUsage + 1
-  });
 
   const chunks = answer.match(/[\s\S]{1,3800}/g) || [answer];
   for (const chunk of chunks) {
