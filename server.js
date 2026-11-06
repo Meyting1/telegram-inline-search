@@ -22,8 +22,7 @@ const chatModes = new Map();
 const chatImagePages = new Map();
 const chatWebPages = new Map();
 const chatVideoPages = new Map();
-const freeAudiobookSearches = new Map();
-const freeAudiobookCache = new Map();
+const footballCache = new Map();
 const aiModelByChat = new Map();
 const aiConversations = new Map();
 const pendingEditPhotos = new Map();
@@ -110,7 +109,7 @@ async function showWelcome(chatId) {
     reply_markup: {
       keyboard: [
         [{ text: "🖼 جستجوی عکس‌ها" }, { text: "🎬 جستجوی ویدئوها" }],
-        [{ text: "🎧 کتاب صوتی" }],
+        [{ text: "⚽ نتایج فوتبال" }],
         [{ text: "🤖 چت با هوش مصنوعی" }],
         [{ text: "💰 قیمت بازار" }]
       ],
@@ -267,15 +266,82 @@ async function showMarketPrices(chatId, category = "all") {
 }
 
 
-async function showAudiobookMenu(chatId) {
-  chatModes.set(chatId, "audiobook_menu");
+
+function tehranDateOffset(days = 0) {
+  const date = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tehran", year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return values.year + "-" + values.month + "-" + values.day;
+}
+
+async function fetchFootballFixtures(params, ttl = 180000) {
+  const apiKey = process.env.API_FOOTBALL_KEY;
+  if (!apiKey) throw new Error("API_FOOTBALL_KEY is not configured");
+  const cacheKey = JSON.stringify(params);
+  const cached = footballCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < ttl) return cached.fixtures;
+
+  const response = await axios.get("https://v3.football.api-sports.io/fixtures", {
+    params: { ...params, timezone: "Asia/Tehran" },
+    headers: { "x-apisports-key": apiKey },
+    timeout: 20000
+  });
+  if (response.data?.errors && Object.keys(response.data.errors).length) {
+    throw new Error(JSON.stringify(response.data.errors));
+  }
+  if (!Array.isArray(response.data?.response)) {
+    throw new Error("Unexpected API-Football response");
+  }
+  const fixtures = response.data.response;
+  footballCache.set(cacheKey, { fixtures, fetchedAt: Date.now() });
+  while (footballCache.size > 30) footballCache.delete(footballCache.keys().next().value);
+  return fixtures;
+}
+
+function formatFootballFixture(match) {
+  const fixture = match.fixture || {};
+  const status = fixture.status || {};
+  const home = match.teams?.home?.name || "تیم میزبان";
+  const away = match.teams?.away?.name || "تیم میهمان";
+  const homeScore = match.goals?.home;
+  const awayScore = match.goals?.away;
+  const hasScore = homeScore !== null && homeScore !== undefined &&
+    awayScore !== null && awayScore !== undefined;
+  const score = hasScore ? homeScore + " - " + awayScore : "⏳";
+  const date = fixture.date ? new Date(fixture.date) : null;
+  const time = date && !Number.isNaN(date.getTime())
+    ? new Intl.DateTimeFormat("fa-IR", {
+        timeZone: "Asia/Tehran", hour: "2-digit", minute: "2-digit"
+      }).format(date)
+    : "زمان نامشخص";
+  const liveStatuses = new Set(["1H", "2H", "HT", "ET", "P", "LIVE", "INT", "BT"]);
+  const finishedStatuses = new Set(["FT", "AET", "PEN"]);
+  let state = status.long || "نامشخص";
+  if (liveStatuses.has(status.short)) {
+    state = "🔴 زنده" + (status.elapsed != null ? "، دقیقه " + status.elapsed : "");
+  } else if (finishedStatuses.has(status.short)) {
+    state = "پایان بازی";
+  } else if (status.short === "NS" || status.short === "TBD") {
+    state = "شروع نشده";
+  }
+  const league = match.league?.name || "مسابقه";
+  const country = match.league?.country ? "، " + match.league.country : "";
+  return "🏆 " + league + country + "\n" +
+    home + "  " + score + "  " + away + "\n" +
+    "🕒 " + time + " | " + state;
+}
+
+async function showFootballMenu(chatId) {
+  chatModes.set(chatId, "football_menu");
   return telegram("sendMessage", {
     chat_id: chatId,
-    text: "🎧 بخش کتاب صوتی\n\nفقط کتاب‌هایی نمایش داده می‌شن که در دسته رسمی کتاب‌های صوتی رایگان شنوتو قرار دارن.",
+    text: "⚽ نتایج و برنامه مسابقات فوتبال\n\nیکی از بخش‌ها رو انتخاب کن:",
     reply_markup: {
       keyboard: [
-        [{ text: "🔎 جستجوی کتاب" }],
-        [{ text: "🆓 کتاب‌های رایگان" }],
+        [{ text: "🔴 نتایج زنده" }, { text: "📅 مسابقات امروز" }],
+        [{ text: "🇮🇷 فوتبال ایران" }, { text: "🌍 فوتبال جهان" }],
         [{ text: "🔙 منوی اصلی" }]
       ],
       resize_keyboard: true,
@@ -284,156 +350,78 @@ async function showAudiobookMenu(chatId) {
   });
 }
 
-async function fetchFreeAudiobookPage(page = 1) {
-  const safePage = Math.max(1, Math.min(31, Number(page) || 1));
-  const cached = freeAudiobookCache.get(safePage);
-  if (cached && Date.now() - cached.fetchedAt < 10 * 60 * 1000) return cached.books;
-
-  const categoryUrl = "https://shenoto.net/cat/main/album/audio_book/49/" +
-    "%DA%A9%D8%AA%D8%A7%D8%A8%20%D9%87%D8%A7%DB%8C%20%D8%B5%D9%88%D8%AA%DB%8C%20%D8%B1%D8%A7%DB%8C%DA%AF%D8%A7%D9%86";
-  const response = await axios.get(categoryUrl, {
-    params: { page: safePage },
-    timeout: 25000,
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
-      "Accept": "text/html,application/xhtml+xml"
-    }
-  });
-
-  const $ = cheerio.load(response.data);
-  const books = [];
-  const seen = new Set();
-
-  // Shenoto's current category page uses a newer card layout. Do not rely
-  // on the old /album/audio_book/ URL pattern: detail links may be /album/...
-  $("a[href]").each((i, element) => {
-    const anchor = $(element);
-    const href = (anchor.attr("href") || "").trim();
-    if (!href || !/\/album\//i.test(href)) return;
-
-    const url = new URL(href, "https://shenoto.net").toString();
-    if (!/^https:\/\/shenoto\.net\//i.test(url) || seen.has(url)) return;
-
-    const card = anchor.closest("article, li, [class*='card'], [class*='item']").first();
-    const scope = card.length ? card : anchor;
-    const titleNode = scope.find("h1,h2,h3,h4,h5,h6,[class*='title'],img[alt]").first();
-    let title = "";
-    if (titleNode.length) {
-      title = titleNode.is("img") ? (titleNode.attr("alt") || "") : titleNode.text();
-    }
-    if (!title) title = anchor.attr("title") || anchor.text();
-    title = String(title).replace(/\s+/g, " ").trim();
-
-    // Reject navigation labels, empty cards and publisher-only links.
-    if (!title || title.length < 2 || title.length > 180) return;
-    if (/^(مشاهده همه|کتاب صوتی|پادکست|موسیقی|ورود|خرید اشتراک)$/i.test(title)) return;
-
-    const cardText = (scope.text() || anchor.text()).replace(/\s+/g, " ").trim();
-    const durationMatch = cardText.match(/\b\d{1,2}:\d{2}(?::\d{2})?\b/);
-    seen.add(url);
-    books.push({ title, url, duration: durationMatch ? durationMatch[0] : "" });
-  });
-
-  freeAudiobookCache.set(safePage, { books, fetchedAt: Date.now() });
-  return books;
-}
-
-async function findFreeAudiobooks(query) {
-  const normalized = String(query || "").trim().toLowerCase()
-    .replace(/[ي]/g, "ی").replace(/[ك]/g, "ک");
-  const pages = await Promise.all([1, 2, 3, 4, 5, 6].map(fetchFreeAudiobookPage));
-  const allBooks = [...new Map(pages.flat().map(book => [book.url, book])).values()];
-  if (!normalized) return allBooks;
-  return allBooks.filter(book => book.title.toLowerCase()
-    .replace(/[ي]/g, "ی").replace(/[ك]/g, "ک").includes(normalized));
-}
-
-async function sendFreeAudiobooks(chatId, query = "", page = 0, token = null, editMessageId = null) {
+async function sendFootballFixtures(chatId, kind) {
+  const labels = {
+    live: "🔴 نتایج زنده فوتبال",
+    today: "📅 مسابقات امروز",
+    iran: "🇮🇷 مسابقات فوتبال ایران",
+    world: "🌍 مسابقات فوتبال جهان"
+  };
   try {
     await telegram("sendChatAction", { chat_id: chatId, action: "typing" });
-    const books = await findFreeAudiobooks(query);
-    if (!books.length) {
-      return telegram("sendMessage", {
-        chat_id: chatId,
-        text: "در فهرست رایگان شنوتو نتیجه‌ای برای این عبارت پیدا نکردم. عبارت کوتاه‌تری رو امتحان کن.",
-        reply_markup: {
-          keyboard: [
-            [{ text: "🔎 جستجوی کتاب" }, { text: "🆓 کتاب‌های رایگان" }],
-            [{ text: "🔙 منوی اصلی" }]
-          ],
-          resize_keyboard: true,
-          is_persistent: true
-        }
-      });
+    let fixtures = [];
+    if (kind === "live") {
+      fixtures = await fetchFootballFixtures({ live: "all" }, 60000);
+    } else if (kind === "today") {
+      fixtures = await fetchFootballFixtures({ date: tehranDateOffset(0) }, 5 * 60 * 1000);
+    } else {
+      fixtures = await fetchFootballFixtures({
+        from: tehranDateOffset(-7),
+        to: tehranDateOffset(7)
+      }, 10 * 60 * 1000);
+      if (kind === "iran") {
+        fixtures = fixtures.filter(item =>
+          String(item.league?.country || "").toLowerCase() === "iran"
+        );
+      } else {
+        const majorLeagueIds = new Set([2, 3, 39, 45, 48, 61, 78, 88, 94, 135, 140, 143, 253, 262, 307]);
+        fixtures = fixtures.filter(item => majorLeagueIds.has(Number(item.league?.id)));
+      }
     }
 
-    const pageSize = 8;
-    const totalPages = Math.ceil(books.length / pageSize);
-    const currentPage = Math.max(0, Math.min(totalPages - 1, page));
-    const currentToken = token || crypto.randomBytes(5).toString("hex");
-    freeAudiobookSearches.set(currentToken, { chatId, query, books });
-    while (freeAudiobookSearches.size > 100) {
-      freeAudiobookSearches.delete(freeAudiobookSearches.keys().next().value);
-    }
-
-    const batch = books.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
-    const heading = query ? "🔎 نتایج جستجوی کتاب صوتی رایگان" : "🎧 کتاب‌های صوتی رایگان شنوتو";
-    const lines = batch.map((book, index) =>
-      (currentPage * pageSize + index + 1) + ". " + book.title +
-      (book.duration ? " — " + book.duration : "")
+    fixtures.sort((a, b) =>
+      new Date(a.fixture?.date || 0).getTime() - new Date(b.fixture?.date || 0).getTime()
     );
-    const keyboard = batch.map(book => [{
-      text: ("▶️ شنیدن: " + book.title).slice(0, 60),
-      url: book.url
-    }]);
-    const navigation = [];
-    if (currentPage > 0) navigation.push({
-      text: "⬅️ قبلی", callback_data: "ab:" + currentToken + ":" + (currentPage - 1)
-    });
-    if (currentPage < totalPages - 1) navigation.push({
-      text: "بعدی ➡️", callback_data: "ab:" + currentToken + ":" + (currentPage + 1)
-    });
-    if (navigation.length) keyboard.push(navigation);
+    const selected = fixtures.slice(0, 15);
+    const body = selected.length
+      ? selected.map((item, index) => (index + 1) + ". " + formatFootballFixture(item)).join("\n\n")
+      : (kind === "live"
+          ? "در حال حاضر مسابقه زنده‌ای در داده‌های سرویس ثبت نشده."
+          : "برای این بازه مسابقه‌ای در داده‌های سرویس پیدا نشد.");
 
-    const message = {
-      chat_id: chatId,
-      text: heading + "\nصفحه " + (currentPage + 1) + " از " + totalPages +
-        "\n━━━━━━━━━━━━━━\n" + lines.join("\n") +
-        "\n\nبرای شنیدن، دکمه زیر هر عنوان رو بزن. پخش از صفحه رسمی شنوتو انجام می‌شه.",
-      reply_markup: { inline_keyboard: keyboard },
-      disable_web_page_preview: true
-    };
-    if (editMessageId) {
-      return telegram("editMessageText", {
-        chat_id: chatId,
-        message_id: editMessageId,
-        text: message.text,
-        reply_markup: message.reply_markup,
-        disable_web_page_preview: true
-      });
-    }
-    return telegram("sendMessage", message);
-  } catch (error) {
-    console.error("Free audiobook search error:", error.response?.data || error.message);
     return telegram("sendMessage", {
       chat_id: chatId,
-      text: "❌ دریافت فهرست کتاب‌های رایگان فعلاً ممکن نشد. کمی بعد دوباره امتحان کن."
+      text: labels[kind] + "\n━━━━━━━━━━━━━━\n" + body +
+        "\n\n🕒 زمان‌ها به وقت تهران هستند.\nبرای دریافت آخرین اطلاعات، دکمه به‌روزرسانی رو بزن.",
+      reply_markup: {
+        keyboard: [
+          [{ text: "🔄 به‌روزرسانی نتایج" }],
+          [{ text: "⚽ بخش فوتبال" }, { text: "🔙 منوی اصلی" }]
+        ],
+        resize_keyboard: true,
+        is_persistent: true
+      }
+    });
+  } catch (error) {
+    console.error("Football API error:", error.response?.data || error.message);
+    const detail = error.response?.status === 403
+      ? "دسترسی API رد شد؛ وضعیت کلید و سهمیه رایگان رو بررسی می‌کنیم."
+      : error.response?.status === 429
+        ? "سهمیه درخواست‌های رایگان فعلاً تمام شده؛ بعداً دوباره امتحان کن."
+        : "دریافت اطلاعات فوتبال فعلاً ممکن نشد. تنظیمات API رو بررسی می‌کنیم.";
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "❌ " + detail,
+      reply_markup: {
+        keyboard: [
+          [{ text: "🔄 به‌روزرسانی نتایج" }],
+          [{ text: "⚽ بخش فوتبال" }, { text: "🔙 منوی اصلی" }]
+        ],
+        resize_keyboard: true,
+        is_persistent: true
+      }
     });
   }
-}
-
-async function sendFreeAudiobookPageFromCallback(query, token, page) {
-  const state = freeAudiobookSearches.get(token);
-  if (!state || state.chatId !== query.message?.chat?.id) {
-    return telegram("answerCallbackQuery", {
-      callback_query_id: query.id,
-      text: "این فهرست منقضی شده؛ دوباره وارد بخش کتاب صوتی شو."
-    });
-  }
-  await telegram("answerCallbackQuery", { callback_query_id: query.id });
-  return sendFreeAudiobooks(
-    state.chatId, state.query, page, token, query.message.message_id
-  );
 }
 
 async function selectChatMode(chatId, mode) {
@@ -448,7 +436,7 @@ async function selectChatMode(chatId, mode) {
     reply_markup: {
       keyboard: [
         [{ text: "🖼 جستجوی عکس‌ها" }, { text: "🎬 جستجوی ویدئوها" }],
-        [{ text: "🎧 کتاب صوتی" }],
+        [{ text: "⚽ نتایج فوتبال" }],
         [{ text: "🤖 چت با هوش مصنوعی" }],
         [{ text: "🔙 منوی اصلی" }]
       ],
@@ -956,25 +944,14 @@ async function processChatMessage(message) {
   }
 
   if (text === "🤖 چت با هوش مصنوعی") return showAiMenu(chatId);
-  if (text === "🎧 کتاب صوتی") return showAudiobookMenu(chatId);
-  if (text === "🔎 جستجوی کتاب") {
-    chatModes.set(chatId, "audiobook_search");
-    return telegram("sendMessage", {
-      chat_id: chatId,
-      text: "🔎 نام کتاب یا بخشی از عنوانش رو بنویس. فقط در فهرست کتاب‌های صوتی رایگان شنوتو جستجو می‌کنم.",
-      reply_markup: {
-        keyboard: [
-          [{ text: "🆓 کتاب‌های رایگان" }],
-          [{ text: "🔙 منوی اصلی" }]
-        ],
-        resize_keyboard: true,
-        is_persistent: true
-      }
-    });
-  }
-  if (text === "🆓 کتاب‌های رایگان") {
-    chatModes.set(chatId, "audiobook_menu");
-    return sendFreeAudiobooks(chatId);
+  if (text === "⚽ نتایج فوتبال" || text === "⚽ بخش فوتبال") return showFootballMenu(chatId);
+  if (text === "🔴 نتایج زنده") return sendFootballFixtures(chatId, "live");
+  if (text === "📅 مسابقات امروز") return sendFootballFixtures(chatId, "today");
+  if (text === "🇮🇷 فوتبال ایران") return sendFootballFixtures(chatId, "iran");
+  if (text === "🌍 فوتبال جهان") return sendFootballFixtures(chatId, "world");
+  if (text === "🔄 به‌روزرسانی نتایج") {
+    const current = chatModes.get(chatId);
+    return sendFootballFixtures(chatId, current === "football_live" ? "live" : "today");
   }
   if (text === "💰 قیمت بازار" || text === "📂 دسته‌بندی قیمت‌ها") return showMarketMenu(chatId);
   if (text === "₿ رمزارزها") return showMarketPrices(chatId, "crypto");
@@ -1871,18 +1848,6 @@ async function handleCallback(query) {
   const data = query.data || "";
 
   try {
-    if (data.startsWith("ab:")) {
-      const parts = data.split(":");
-      const token = parts[1];
-      const page = Number(parts[2]);
-      if (!Number.isInteger(page) || page < 0) {
-        return telegram("answerCallbackQuery", {
-          callback_query_id: query.id,
-          text: "صفحه درخواستی معتبر نیست."
-        });
-      }
-      return sendFreeAudiobookPageFromCallback(query, token, page);
-    }
     if (data.startsWith("cw:")) {
       const token = data.slice(3);
       const state = chatWebPages.get(token);
