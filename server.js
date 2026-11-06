@@ -305,8 +305,9 @@ async function generateImageForChat(chatId, requestText) {
 async function handleAiMessage(chatId, userId, userText) {
   const groqKey = process.env.GROQ_API_KEY;
   const openRouterKey = process.env.OPENROUTER_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
 
-  if (!groqKey && !openRouterKey) {
+  if (!groqKey && !openRouterKey && !geminiKey) {
     return telegram("sendMessage", {
       chat_id: chatId,
       text: "اتصال هوش مصنوعی هنوز کامل تنظیم نشده. لطفاً بعداً دوباره امتحان کن."
@@ -356,6 +357,31 @@ async function handleAiMessage(chatId, userId, userText) {
       }
     });
   }
+  if (geminiKey) {
+    providers.push({
+      name: "Gemini",
+      url:
+        "https://generativelanguage.googleapis.com/v1beta/models/" +
+        "gemini-3.1-flash-lite:generateContent?key=" +
+        encodeURIComponent(geminiKey),
+      key: null,
+      body: {
+        systemInstruction: {
+          parts: [{ text: messages[0].content }]
+        },
+        contents: nextHistory.map(item => ({
+          role: item.role === "assistant" ? "model" : "user",
+          parts: [{ text: item.content }]
+        })),
+        generationConfig: {
+          maxOutputTokens: 900,
+          temperature: 0.7
+        }
+      },
+      headers: {},
+      type: "gemini"
+    });
+  }
 
   let answer = "";
   let lastError = null;
@@ -367,7 +393,7 @@ async function handleAiMessage(chatId, userId, userText) {
         provider.body,
         {
           headers: {
-            Authorization: "Bearer " + provider.key,
+            ...(provider.key ? { Authorization: "Bearer " + provider.key } : {}),
             "Content-Type": "application/json",
             ...provider.headers
           },
@@ -375,8 +401,18 @@ async function handleAiMessage(chatId, userId, userText) {
         }
       );
 
-      answer = response.data?.choices?.[0]?.message?.content?.trim();
-      if (!answer) throw new Error("Empty AI response");
+      if (provider.type === "gemini") {
+        answer = response.data?.candidates?.[0]?.content?.parts
+          ?.map(part => part.text || "")
+          .join("")
+          .trim();
+      } else {
+        answer = response.data?.choices?.[0]?.message?.content?.trim();
+      }
+      if (!answer) {
+        const blockReason = response.data?.promptFeedback?.blockReason;
+        throw new Error(blockReason ? "Gemini blocked prompt: " + blockReason : "Empty AI response");
+      }
       console.log("AI response served by:", provider.name);
       break;
     } catch (error) {
