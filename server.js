@@ -368,7 +368,8 @@ async function sendFootballFixtures(chatId, kind) {
     } else {
       fixtures = await fetchFootballFixtures({
         from: tehranDateOffset(-7),
-        to: tehranDateOffset(7)
+        to: tehranDateOffset(7),
+        season: Number(tehranDateOffset(0).slice(0, 4))
       }, 10 * 60 * 1000);
       if (kind === "iran") {
         fixtures = fixtures.filter(item =>
