@@ -1047,58 +1047,52 @@ async function sendChatVideoPage(token, existingData = null) {
   );
   const videos = interleaveVideos(
     data.firstData.results.map(v => ({
-      title: v.tags || "Video",
-      duration: v.duration,
-      url: v.videos?.medium?.url || v.videos?.small?.url || v.pageURL,
-      sourceUrl: v.pageURL || ""
+      title: v.tags || "Video", duration: v.duration,
+      url: v.videos?.medium?.url || v.videos?.small?.url || "", sourceUrl: v.pageURL || "", direct: true
     })),
     data.secondData.results.map(v => ({
       title: v.title || "Video", duration: v.duration,
-      url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : "", sourceUrl: ""
+      url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : "", sourceUrl: "", direct: false
     })),
-    data.thirdData.results.map(v => ({
+    await Promise.all(data.thirdData.results.slice(0, CHAT_VIDEO_PAGE_SIZE * 2).map(async v => ({
       title: v.name || "PeerTube video",
-      duration: v.duration ? `${Math.floor(v.duration / 60)}:${String(v.duration % 60).padStart(2, "0")}` : "",
-      url: v.embedUrl || v.url || "", sourceUrl: v.url || ""
-    }))
+      duration: v.duration ? `${Math.floor(v.duration/60)}:${String(v.duration%60).padStart(2,"0")}` : "",
+      url: await resolvePeerTubeMp4(v), sourceUrl: v.url || "", direct: true
+    })))
   ).filter(v => /^https?:\/\//i.test(v.url || "")).slice(0, CHAT_VIDEO_PAGE_SIZE * 2);
 
   if (!videos.length) {
-    await telegram("sendMessage", {
-      chat_id: state.chatId,
-      text: "برای این عبارت ویدئویی بیشتری پیدا نشد."
-    });
+    await telegram("sendMessage", { chat_id: state.chatId, text: "برای این عبارت ویدئویی بیشتری پیدا نشد." });
     return;
   }
-
-  for (let i = 0; i < videos.length; i++) {
-    const v = videos[i];
-    const buttons = [[{ text: "▶️ تماشای ویدئو", url: v.url }]];
-    if (/^https?:\/\//i.test(v.sourceUrl || "")) {
-      buttons[0].push({ text: "مشاهده منبع", url: v.sourceUrl });
+  for (let i=0; i<videos.length; i++) {
+    const v=videos[i];
+    const caption = `🎬 ${((page-1)*CHAT_VIDEO_PAGE_SIZE*2)+i+1}. ${String(v.title).slice(0,220)}` +
+      (v.duration ? `\nمدت: ${v.duration}` : "");
+    let sentAsVideo=false;
+    if (v.direct) {
+      try {
+        await telegram("sendVideo",{chat_id:state.chatId,video:v.url,caption,supports_streaming:true});
+        sentAsVideo=true;
+      } catch(error) {
+        console.error("Direct video send failed:",error.response?.data || error.message);
+      }
     }
-    await telegram("sendMessage", {
-      chat_id: state.chatId,
-      text:
-        `🎬 ${((page - 1) * CHAT_VIDEO_PAGE_SIZE * 2) + i + 1}. ${String(v.title).slice(0, 220)}\n` +
-        (v.duration ? `مدت: ${v.duration}\n` : ""),
-      reply_markup: { inline_keyboard: buttons },
-      disable_web_page_preview: true
-    });
+    if (!sentAsVideo) {
+      const buttons=[[{text:"▶️ تماشای ویدئو",url:v.url}]];
+      if (/^https?:\/\//i.test(v.sourceUrl || "")) buttons[0].push({text:"مشاهده منبع",url:v.sourceUrl});
+      await telegram("sendMessage",{chat_id:state.chatId,text:caption,reply_markup:{inline_keyboard:buttons},disable_web_page_preview:true});
+    }
   }
-
-  const hasMore =
-    data.firstData.count > page * CHAT_VIDEO_PAGE_SIZE ||
-    data.secondData.count > page * CHAT_VIDEO_PAGE_SIZE ||
-    data.thirdData.count > page * CHAT_VIDEO_PAGE_SIZE;
-  await telegram("sendMessage", {
-    chat_id: state.chatId,
-    text: hasMore ? "برای دیدن ویدئوهای بیشتر، دکمه زیر رو بزن." : "پایان نتایج این جست‌وجو.",
-    reply_markup: hasMore ? {
-      inline_keyboard: [[{ text: "ویدئوهای بیشتر", callback_data: `cv:${token}` }]]
-    } : { inline_keyboard: [] }
+  const hasMore=data.firstData.count>page*CHAT_VIDEO_PAGE_SIZE ||
+    data.secondData.count>page*CHAT_VIDEO_PAGE_SIZE || data.thirdData.count>page*CHAT_VIDEO_PAGE_SIZE;
+  await telegram("sendMessage",{
+    chat_id:state.chatId,
+    text:hasMore?"برای دیدن ویدئوهای بیشتر، دکمه زیر رو بزن.":"پایان نتایج این جست‌وجو.",
+    reply_markup:hasMore?{inline_keyboard:[[{text:"ویدئوهای بیشتر",callback_data:`cv:${token}`}]]}:{inline_keyboard:[]}
   });
 }
+
 async function sendChatImagePage(chatId, query, page, token) {
   const data = await searchImages(query, page);
   const hits = (data.hits || []).filter(h => h.webformatURL).slice(0, 30);
@@ -1330,52 +1324,21 @@ function interleaveVideos(...lists) {
 }
 
 function formatFirstVideo(video) {
-  const rendition =
-    video.videos?.medium?.url
-      ? video.videos.medium
-      : video.videos?.small;
-
+  const rendition = video.videos?.medium?.url ? video.videos.medium : video.videos?.small;
   if (!video.id || !rendition?.url) return null;
-
   const title = (video.tags || "Video").slice(0, 180);
   const duration = Number(video.duration || 0);
-  const thumbnail =
-    rendition.thumbnail ||
-    video.videos?.tiny?.thumbnail ||
-    "";
-
-  const result = {
-    type: "article",
-    id: `px-${video.id}`,
-    title: `🎬 ${title}`.slice(0, 200),
-    description:
-      `مدت: ${duration ? duration + " ثانیه" : "نامشخص"}`,
-    input_message_content: {
-      message_text:
-        `🎬 ${title}\n\n` +
-        `مدت ویدئو: ${duration || "نامشخص"} ثانیه`
-    },
-    reply_markup: {
-      inline_keyboard: [[
-        {
-          text: "▶️ تماشای ویدئو",
-          url: rendition.url
-        },
-        {
-          text: "مشاهده منبع",
-          url: video.pageURL
-        }
-      ]]
-    }
+  const thumbnail = rendition.thumbnail || video.videos?.tiny?.thumbnail || "";
+  if (!/^https?:\/\//i.test(thumbnail)) return null;
+  return {
+    type: "video", id: `px-${video.id}`, video_url: rendition.url, mime_type: "video/mp4",
+    thumbnail_url: thumbnail, title: title.slice(0, 200),
+    description: `مدت: ${duration ? duration + " ثانیه" : "نامشخص"}`,
+    video_width: rendition.width || undefined, video_height: rendition.height || undefined,
+    video_duration: duration || undefined,
+    caption: `🎬 ${title}\nمدت ویدئو: ${duration || "نامشخص"} ثانیه`,
+    reply_markup: { inline_keyboard: [[{ text: "مشاهده منبع", url: video.pageURL }]] }
   };
-
-  if (/^https?:\/\//i.test(thumbnail)) {
-    result.thumbnail_url = thumbnail;
-    result.thumbnail_width = rendition.width || 320;
-    result.thumbnail_height = rendition.height || 180;
-  }
-
-  return result;
 }
 
 function formatSecondVideo(video) {
@@ -1391,28 +1354,61 @@ function formatSecondVideo(video) {
   if (/^https?:\/\//i.test(thumbnail)) { result.thumbnail_url = thumbnail; result.thumbnail_width = 320; result.thumbnail_height = 180; }
   return result;
 }
-function formatSepiaVideo(video) {
+async function resolvePeerTubeMp4(video) {
+  const videoId = video.uuid || video.id || video.shortUUID;
+  const pageUrl = video.url || video.embedUrl;
+  if (!videoId || !pageUrl) return null;
+  const findMp4 = files => {
+    const candidates = (Array.isArray(files) ? files : [])
+      .map(file => ({ url: file.fileUrl || file.fileDownloadUrl || file.url, resolution: Number(file.resolution?.id || file.resolution || 0) }))
+      .filter(file => /^https?:\/\//i.test(file.url || "") && /\.mp4(?:$|[?#])/i.test(file.url));
+    candidates.sort((a,b) => {
+      const score = n => n > 0 && n <= 720 ? 1000 - Math.abs(720 - n) : n;
+      return score(b.resolution) - score(a.resolution);
+    });
+    return candidates[0]?.url || null;
+  };
+  const cached = findMp4(video.files || video.videoFiles);
+  if (cached) return cached;
+  try {
+    const origin = new URL(pageUrl).origin;
+    const response = await axios.get(`${origin}/api/v1/videos/${encodeURIComponent(videoId)}`, {
+      timeout: 12000, headers: { Accept: "application/json" }
+    });
+    return findMp4(response.data?.files);
+  } catch (error) {
+    console.error("PeerTube direct video lookup failed:", error.response?.status || error.message);
+    return null;
+  }
+}
+
+async function formatSepiaVideo(video) {
   const videoId = video.uuid || video.id || video.shortUUID;
   if (!videoId) return null;
   const title = String(video.name || "ویدئوی PeerTube").slice(0, 180);
   const seconds = Number(video.duration || 0);
-  const duration = seconds ? `${Math.floor(seconds / 60)} دقیقه و ${seconds % 60} ثانیه` : "نامشخص";
+  const duration = seconds ? `${Math.floor(seconds/60)} دقیقه و ${seconds%60} ثانیه` : "نامشخص";
   const watchUrl = video.embedUrl || video.url;
   if (!/^https?:\/\//i.test(watchUrl || "")) return null;
-  const result = {
-    type: "article",
-    id: `sp-${String(videoId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48)}`,
-    title: `🌐 ${title}`.slice(0, 200),
-    description: `PeerTube | مدت: ${duration}`.slice(0, 180),
-    input_message_content: { message_text: `🌐 ${title}\n\nمدت ویدئو: ${duration}\nزبان: ${video.language?.label || "نامشخص"}` },
-    reply_markup: { inline_keyboard: [[
-      { text: "▶️ تماشای ویدئو", url: watchUrl },
-      ...(video.url && video.url !== watchUrl ? [{ text: "صفحه ویدئو", url: video.url }] : [])
-    ]] }
-  };
   const thumbnail = video.thumbnailUrl || video.previewUrl || "";
-  if (/^https?:\/\//i.test(thumbnail)) { result.thumbnail_url = thumbnail; result.thumbnail_width = 320; result.thumbnail_height = 180; }
-  return result;
+  const directUrl = await resolvePeerTubeMp4(video);
+  if (directUrl && /^https?:\/\//i.test(thumbnail)) {
+    return {
+      type: "video", id: `sp-${String(videoId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0,48)}`,
+      video_url: directUrl, mime_type: "video/mp4", thumbnail_url: thumbnail,
+      title: title.slice(0,200), description: `PeerTube | مدت: ${duration}`.slice(0,180),
+      video_duration: seconds || undefined,
+      caption: `🌐 ${title}\nمدت ویدئو: ${duration}\nزبان: ${video.language?.label || "نامشخص"}`,
+      reply_markup: { inline_keyboard: [[{ text: "صفحه ویدئو", url: video.url || watchUrl }]] }
+    };
+  }
+  return {
+    type: "article", id: `sp-${String(videoId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0,48)}`,
+    title: `🌐 ${title}`.slice(0,200),
+    description: `PeerTube | پخش مستقیم در دسترس نیست | مدت: ${duration}`.slice(0,180),
+    input_message_content: { message_text: `🌐 ${title}\n\nمدت ویدئو: ${duration}\nزبان: ${video.language?.label || "نامشخص"}` },
+    reply_markup: { inline_keyboard: [[{ text: "▶️ تماشای ویدئو", url: watchUrl }]] }
+  };
 }
 
 async function fetchBothVideoSources(query, firstPage, secondPage, perPage = VIDEO_PAGE_SIZE, thirdPage = 1, alternateQuery = null) {
@@ -1468,7 +1464,8 @@ async function answerVideoInlineQuery(query, text) {
 
   const firstResults = data.firstData.results.map(formatFirstVideo).filter(Boolean);
   const secondResults = data.secondData.results.map(formatSecondVideo).filter(Boolean);
-  const thirdResults = data.thirdData.results.map(formatSepiaVideo).filter(Boolean);
+  const thirdFormatted = await Promise.allSettled(data.thirdData.results.slice(0, 12).map(formatSepiaVideo));
+  const thirdResults = thirdFormatted.filter(item => item.status === "fulfilled" && item.value).map(item => item.value);
   const results = interleaveVideos(firstResults, secondResults, thirdResults);
 
   if (results.length === 0) {
