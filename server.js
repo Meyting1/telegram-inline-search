@@ -366,11 +366,18 @@ async function sendFootballFixtures(chatId, kind) {
     } else if (kind === "today") {
       fixtures = await fetchFootballFixtures({ date: tehranDateOffset(0) }, 5 * 60 * 1000);
     } else {
-      fixtures = await fetchFootballFixtures({
-        from: tehranDateOffset(-7),
-        to: tehranDateOffset(7),
-        season: Number(tehranDateOffset(0).slice(0, 4))
-      }, 10 * 60 * 1000);
+      // Use the proven single-date filter instead of from/to.
+      // Fetch a 15-day window in small batches to avoid API bursts.
+      const dates = Array.from({ length: 15 }, (_, index) => tehranDateOffset(index - 7));
+      const dailyFixtures = [];
+      for (let index = 0; index < dates.length; index += 4) {
+        const batch = dates.slice(index, index + 4);
+        const batchResults = await Promise.all(
+          batch.map(date => fetchFootballFixtures({ date }, 10 * 60 * 1000))
+        );
+        dailyFixtures.push(...batchResults.flat());
+      }
+      fixtures = dailyFixtures;
       if (kind === "iran") {
         fixtures = fixtures.filter(item =>
           String(item.league?.country || "").toLowerCase() === "iran"
