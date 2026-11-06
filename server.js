@@ -193,6 +193,17 @@ async function generateImageForChat(chatId, requestText) {
     });
   }
 
+  let statusMessageId = null;
+  try {
+    const status = await telegram("sendMessage", {
+      chat_id: chatId,
+      text: "⏳ درخواستت دریافت شد؛ دارم تصویرت رو می‌سازم. لطفاً کمی صبر کن..."
+    });
+    statusMessageId = status.result?.message_id || null;
+  } catch (statusError) {
+    console.error("Could not send image-generation status:", statusError.message);
+  }
+
   await telegram("sendChatAction", {
     chat_id: chatId,
     action: "upload_photo"
@@ -241,8 +252,28 @@ async function generateImageForChat(chatId, requestText) {
     await axios.post(TELEGRAM_API + "/sendPhoto", form, {
       timeout: 60000
     });
+    if (statusMessageId) {
+      try {
+        await telegram("deleteMessage", {
+          chat_id: chatId,
+          message_id: statusMessageId
+        });
+      } catch (deleteError) {
+        console.error("Could not delete image status message:", deleteError.message);
+      }
+    }
     console.log("Image generated and sent with Cloudflare Workers AI.");
   } catch (error) {
+    if (statusMessageId) {
+      try {
+        await telegram("deleteMessage", {
+          chat_id: chatId,
+          message_id: statusMessageId
+        });
+      } catch (deleteError) {
+        console.error("Could not delete image status message:", deleteError.message);
+      }
+    }
     const status = error.response?.status;
     console.error(
       "Cloudflare image generation error:",
