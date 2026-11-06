@@ -1046,13 +1046,18 @@ async function sendChatVideoPage(token, existingData = null) {
     state.translatedQuery && state.translatedQuery !== state.query ? state.query : null
   );
   const videos = interleaveVideos(
-    data.firstData.results.map(v => ({
-      title: v.tags || "Video", duration: v.duration,
-      url: v.videos?.medium?.url || v.videos?.small?.url || "", sourceUrl: v.pageURL || "", direct: true
-    })),
+    data.firstData.results.map(v => {
+      const rendition = v.videos?.medium || v.videos?.small;
+      return {
+        title: v.tags || "Video", duration: v.duration,
+        url: rendition?.url || "", thumbnail: rendition?.thumbnail || v.videos?.tiny?.thumbnail || "",
+        sourceUrl: v.pageURL || "", direct: true
+      };
+    }),
     data.secondData.results.map(v => ({
       title: v.title || "Video", duration: v.duration,
-      url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : "", sourceUrl: "", direct: false
+      url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : "",
+      thumbnail: v.thumbnail || "", sourceUrl: "", direct: false
     })),
     await Promise.all(data.thirdData.results.slice(0, CHAT_VIDEO_PAGE_SIZE * 2).map(async v => {
       const directUrl = await resolvePeerTubeMp4(v);
@@ -1060,6 +1065,7 @@ async function sendChatVideoPage(token, existingData = null) {
         title: v.name || "PeerTube video",
         duration: v.duration ? `${Math.floor(v.duration/60)}:${String(v.duration%60).padStart(2,"0")}` : "",
         url: directUrl || v.embedUrl || v.url || "",
+        thumbnail: v.thumbnailUrl || v.previewUrl || "",
         sourceUrl: v.url || "", direct: Boolean(directUrl)
       };
     }))
@@ -1085,7 +1091,14 @@ async function sendChatVideoPage(token, existingData = null) {
     if (!sentAsVideo) {
       const buttons=[[{text:"▶️ تماشای ویدئو",url:v.url}]];
       if (/^https?:\/\//i.test(v.sourceUrl || "")) buttons[0].push({text:"مشاهده منبع",url:v.sourceUrl});
-      await telegram("sendMessage",{chat_id:state.chatId,text:caption,reply_markup:{inline_keyboard:buttons},disable_web_page_preview:true});
+      if (/^https?:\/\//i.test(v.thumbnail || "")) {
+        await telegram("sendPhoto",{
+          chat_id:state.chatId,photo:v.thumbnail,caption,
+          reply_markup:{inline_keyboard:buttons}
+        });
+      } else {
+        await telegram("sendMessage",{chat_id:state.chatId,text:caption,reply_markup:{inline_keyboard:buttons},disable_web_page_preview:true});
+      }
     }
   }
   const hasMore=data.firstData.count>page*CHAT_VIDEO_PAGE_SIZE ||
@@ -1406,13 +1419,19 @@ async function formatSepiaVideo(video) {
       reply_markup: { inline_keyboard: [[{ text: "صفحه ویدئو", url: video.url || watchUrl }]] }
     };
   }
-  return {
+  const result = {
     type: "article", id: `sp-${String(videoId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0,48)}`,
     title: `🌐 ${title}`.slice(0,200),
     description: `PeerTube | پخش مستقیم در دسترس نیست | مدت: ${duration}`.slice(0,180),
     input_message_content: { message_text: `🌐 ${title}\n\nمدت ویدئو: ${duration}\nزبان: ${video.language?.label || "نامشخص"}` },
     reply_markup: { inline_keyboard: [[{ text: "▶️ تماشای ویدئو", url: watchUrl }]] }
   };
+  if (/^https?:\/\//i.test(thumbnail)) {
+    result.thumbnail_url = thumbnail;
+    result.thumbnail_width = 320;
+    result.thumbnail_height = 180;
+  }
+  return result;
 }
 
 async function fetchBothVideoSources(query, firstPage, secondPage, perPage = VIDEO_PAGE_SIZE, thirdPage = 1, alternateQuery = null) {
