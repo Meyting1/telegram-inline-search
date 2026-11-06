@@ -22,6 +22,8 @@ const chatModes = new Map();
 const chatImagePages = new Map();
 const chatWebPages = new Map();
 const chatVideoPages = new Map();
+const freeAudiobookSearches = new Map();
+const freeAudiobookCache = new Map();
 const aiModelByChat = new Map();
 const aiConversations = new Map();
 const pendingEditPhotos = new Map();
@@ -107,8 +109,8 @@ async function showWelcome(chatId) {
       "از منوی پایین نوع جست‌وجو رو انتخاب کن؛ بعد عبارتت رو بنویس تا نتایج همین‌جا نمایش داده بشن.",
     reply_markup: {
       keyboard: [
-        [{ text: "🔎 جستجوی وب" }, { text: "🖼 جستجوی عکس‌ها" }],
-        [{ text: "🎬 جستجوی ویدئوها" }],
+        [{ text: "🖼 جستجوی عکس‌ها" }, { text: "🎬 جستجوی ویدئوها" }],
+        [{ text: "🎧 کتاب صوتی" }],
         [{ text: "🤖 چت با هوش مصنوعی" }],
         [{ text: "💰 قیمت بازار" }]
       ],
@@ -264,10 +266,164 @@ async function showMarketPrices(chatId, category = "all") {
   }
 }
 
+
+async function showAudiobookMenu(chatId) {
+  chatModes.set(chatId, "audiobook_menu");
+  return telegram("sendMessage", {
+    chat_id: chatId,
+    text: "🎧 بخش کتاب صوتی\n\nفقط کتاب‌هایی نمایش داده می‌شن که در دسته رسمی کتاب‌های صوتی رایگان شنوتو قرار دارن.",
+    reply_markup: {
+      keyboard: [
+        [{ text: "🔎 جستجوی کتاب" }],
+        [{ text: "🆓 کتاب‌های رایگان" }],
+        [{ text: "🔙 منوی اصلی" }]
+      ],
+      resize_keyboard: true,
+      is_persistent: true
+    }
+  });
+}
+
+async function fetchFreeAudiobookPage(page = 1) {
+  const safePage = Math.max(1, Math.min(31, Number(page) || 1));
+  const cached = freeAudiobookCache.get(safePage);
+  if (cached && Date.now() - cached.fetchedAt < 10 * 60 * 1000) return cached.books;
+
+  const categoryUrl = "https://shenoto.com/cat/main/album/audio_book/49/" +
+    "%DA%A9%D8%AA%D8%A7%D8%A8%20%D9%87%D8%A7%DB%8C%20%D8%B5%D9%88%D8%AA%DB%8C%20%D8%B1%D8%A7%DB%8C%DA%AF%D8%A7%D9%86";
+  const response = await axios.get(categoryUrl, {
+    params: { page: safePage },
+    timeout: 20000,
+    headers: {
+      "User-Agent": "Mozilla/5.0 (compatible; MorvarBot/1.0)",
+      "Accept": "text/html"
+    }
+  });
+
+  const $ = cheerio.load(response.data);
+  const books = [];
+  const seen = new Set();
+  $('a[href*="/album/audio_book/"]').each((i, element) => {
+    const anchor = $(element);
+    let title = anchor.text().replace(/\s+/g, " ").trim();
+    const href = anchor.attr("href") || "";
+    if (!title || !href || !/\/album\/audio_book\//.test(href)) return;
+    const url = new URL(href, "https://shenoto.com").toString();
+    if (seen.has(url)) return;
+    seen.add(url);
+    const cardText = [
+      anchor.text(), anchor.parent().text(), anchor.parent().parent().text()
+    ].join(" ").replace(/\s+/g, " ").trim();
+    const durationMatch = cardText.match(/\b\d{1,2}:\d{2}(?::\d{2})?\b/);
+    title = title.replace(/\s+/g, " ").trim().slice(0, 180);
+    books.push({ title, url, duration: durationMatch ? durationMatch[0] : "" });
+  });
+
+  freeAudiobookCache.set(safePage, { books, fetchedAt: Date.now() });
+  return books;
+}
+
+async function findFreeAudiobooks(query) {
+  const normalized = String(query || "").trim().toLowerCase()
+    .replace(/[ي]/g, "ی").replace(/[ك]/g, "ک");
+  const pages = await Promise.all([1, 2, 3, 4, 5, 6].map(fetchFreeAudiobookPage));
+  const allBooks = [...new Map(pages.flat().map(book => [book.url, book])).values()];
+  if (!normalized) return allBooks;
+  return allBooks.filter(book => book.title.toLowerCase()
+    .replace(/[ي]/g, "ی").replace(/[ك]/g, "ک").includes(normalized));
+}
+
+async function sendFreeAudiobooks(chatId, query = "", page = 0, token = null, editMessageId = null) {
+  try {
+    await telegram("sendChatAction", { chat_id: chatId, action: "typing" });
+    const books = await findFreeAudiobooks(query);
+    if (!books.length) {
+      return telegram("sendMessage", {
+        chat_id: chatId,
+        text: "در فهرست رایگان شنوتو نتیجه‌ای برای این عبارت پیدا نکردم. عبارت کوتاه‌تری رو امتحان کن.",
+        reply_markup: {
+          keyboard: [
+            [{ text: "🔎 جستجوی کتاب" }, { text: "🆓 کتاب‌های رایگان" }],
+            [{ text: "🔙 منوی اصلی" }]
+          ],
+          resize_keyboard: true,
+          is_persistent: true
+        }
+      });
+    }
+
+    const pageSize = 8;
+    const totalPages = Math.ceil(books.length / pageSize);
+    const currentPage = Math.max(0, Math.min(totalPages - 1, page));
+    const currentToken = token || crypto.randomBytes(5).toString("hex");
+    freeAudiobookSearches.set(currentToken, { chatId, query, books });
+    while (freeAudiobookSearches.size > 100) {
+      freeAudiobookSearches.delete(freeAudiobookSearches.keys().next().value);
+    }
+
+    const batch = books.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+    const heading = query ? "🔎 نتایج جستجوی کتاب صوتی رایگان" : "🎧 کتاب‌های صوتی رایگان شنوتو";
+    const lines = batch.map((book, index) =>
+      (currentPage * pageSize + index + 1) + ". " + book.title +
+      (book.duration ? " — " + book.duration : "")
+    );
+    const keyboard = batch.map(book => [{
+      text: ("▶️ شنیدن: " + book.title).slice(0, 60),
+      url: book.url
+    }]);
+    const navigation = [];
+    if (currentPage > 0) navigation.push({
+      text: "⬅️ قبلی", callback_data: "ab:" + currentToken + ":" + (currentPage - 1)
+    });
+    if (currentPage < totalPages - 1) navigation.push({
+      text: "بعدی ➡️", callback_data: "ab:" + currentToken + ":" + (currentPage + 1)
+    });
+    if (navigation.length) keyboard.push(navigation);
+
+    const message = {
+      chat_id: chatId,
+      text: heading + "\nصفحه " + (currentPage + 1) + " از " + totalPages +
+        "\n━━━━━━━━━━━━━━\n" + lines.join("\n") +
+        "\n\nبرای شنیدن، دکمه زیر هر عنوان رو بزن. پخش از صفحه رسمی شنوتو انجام می‌شه.",
+      reply_markup: { inline_keyboard: keyboard },
+      disable_web_page_preview: true
+    };
+    if (editMessageId) {
+      return telegram("editMessageText", {
+        chat_id: chatId,
+        message_id: editMessageId,
+        text: message.text,
+        reply_markup: message.reply_markup,
+        disable_web_page_preview: true
+      });
+    }
+    return telegram("sendMessage", message);
+  } catch (error) {
+    console.error("Free audiobook search error:", error.response?.data || error.message);
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "❌ دریافت فهرست کتاب‌های رایگان فعلاً ممکن نشد. کمی بعد دوباره امتحان کن."
+    });
+  }
+}
+
+async function sendFreeAudiobookPageFromCallback(query, token, page) {
+  const state = freeAudiobookSearches.get(token);
+  if (!state || state.chatId !== query.message?.chat?.id) {
+    return telegram("answerCallbackQuery", {
+      callback_query_id: query.id,
+      text: "این فهرست منقضی شده؛ دوباره وارد بخش کتاب صوتی شو."
+    });
+  }
+  await telegram("answerCallbackQuery", { callback_query_id: query.id });
+  return sendFreeAudiobooks(
+    state.chatId, state.query, page, token, query.message.message_id
+  );
+}
+
 async function selectChatMode(chatId, mode) {
   chatModes.set(chatId, mode);
   const prompts = {
-    web: "🔎 عبارت جست‌وجوی وب رو بنویس:",
     image: "🖼 عبارت جست‌وجوی عکس رو بنویس:",
     video: "🎬 عبارت جست‌وجوی ویدئو رو بنویس:"
   };
@@ -276,9 +432,10 @@ async function selectChatMode(chatId, mode) {
     text: prompts[mode],
     reply_markup: {
       keyboard: [
-        [{ text: "🔎 جستجوی وب" }, { text: "🖼 جستجوی عکس‌ها" }],
-        [{ text: "🎬 جستجوی ویدئوها" }],
-        [{ text: "🤖 چت با هوش مصنوعی" }]
+        [{ text: "🖼 جستجوی عکس‌ها" }, { text: "🎬 جستجوی ویدئوها" }],
+        [{ text: "🎧 کتاب صوتی" }],
+        [{ text: "🤖 چت با هوش مصنوعی" }],
+        [{ text: "🔙 منوی اصلی" }]
       ],
       resize_keyboard: true,
       is_persistent: true
@@ -769,7 +926,6 @@ async function processChatMessage(message) {
   if (message.photo?.length) return handleIncomingEditPhoto(message);
 
   if (command === "/start") return showWelcome(chatId);
-  if (command === "/web") return selectChatMode(chatId, "web");
   if (command === "/img") return selectChatMode(chatId, "image");
   if (command === "/vid") return selectChatMode(chatId, "video");
   if (command === "/ai") return showAiMenu(chatId);
@@ -785,6 +941,26 @@ async function processChatMessage(message) {
   }
 
   if (text === "🤖 چت با هوش مصنوعی") return showAiMenu(chatId);
+  if (text === "🎧 کتاب صوتی") return showAudiobookMenu(chatId);
+  if (text === "🔎 جستجوی کتاب") {
+    chatModes.set(chatId, "audiobook_search");
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "🔎 نام کتاب یا بخشی از عنوانش رو بنویس. فقط در فهرست کتاب‌های صوتی رایگان شنوتو جستجو می‌کنم.",
+      reply_markup: {
+        keyboard: [
+          [{ text: "🆓 کتاب‌های رایگان" }],
+          [{ text: "🔙 منوی اصلی" }]
+        ],
+        resize_keyboard: true,
+        is_persistent: true
+      }
+    });
+  }
+  if (text === "🆓 کتاب‌های رایگان") {
+    chatModes.set(chatId, "audiobook_menu");
+    return sendFreeAudiobooks(chatId);
+  }
   if (text === "💰 قیمت بازار" || text === "📂 دسته‌بندی قیمت‌ها") return showMarketMenu(chatId);
   if (text === "₿ رمزارزها") return showMarketPrices(chatId, "crypto");
   if (text === "💱 ارزهای خارجی") return showMarketPrices(chatId, "currency");
@@ -863,11 +1039,25 @@ async function processChatMessage(message) {
   if (text === AI_MODELS.balanced.label) return selectAiModel(chatId, "balanced");
   if (text === AI_MODELS.advanced.label) return selectAiModel(chatId, "advanced");
 
-  if (text === "🔎 جستجوی وب") return selectChatMode(chatId, "web");
   if (text === "🖼 جستجوی عکس‌ها") return selectChatMode(chatId, "image");
   if (text === "🎬 جستجوی ویدئوها") return selectChatMode(chatId, "video");
 
   const mode = chatModes.get(chatId);
+  if (mode === "audiobook_search") {
+    if (!text || text.startsWith("/")) {
+      return telegram("sendMessage", {
+        chat_id: chatId,
+        text: "لطفاً نام کتاب رو به صورت متن بفرست."
+      });
+    }
+    return sendFreeAudiobooks(chatId, text);
+  }
+  if (mode === "audiobook_menu") {
+    return telegram("sendMessage", {
+      chat_id: chatId,
+      text: "از منوی کتاب صوتی، جستجوی کتاب یا فهرست کتاب‌های رایگان رو انتخاب کن."
+    });
+  }
   if (mode === "market" || mode === "market_menu") {
     await telegram("sendMessage", {
       chat_id: chatId,
@@ -952,24 +1142,6 @@ async function processChatMessage(message) {
   });
 
   try {
-    if (mode === "web") {
-      let searchTerm = await translateSearchQuery(text);
-      let pages = await searchWeb(searchTerm, 50);
-      if (!pages.length && searchTerm.toLowerCase() !== text.toLowerCase()) {
-        pages = await searchWeb(text, 50);
-      }
-      const valid = pages.filter(p => /^https?:\/\//i.test(p.url || ""));
-      if (!valid.length) {
-        return telegram("sendMessage", {
-          chat_id: chatId,
-          text: "نتیجه‌ای پیدا نشد. عبارت دیگری رو امتحان کن."
-        });
-      }
-      const token = crypto.randomBytes(5).toString("hex");
-      chatWebPages.set(token, { chatId, results: valid, page: 0 });
-      return sendChatWebPage(token);
-    }
-
     if (mode === "image") {
       let searchTerm = await translateSearchQuery(text);
       let imageData = await searchImages(searchTerm, 1);
@@ -1684,6 +1856,18 @@ async function handleCallback(query) {
   const data = query.data || "";
 
   try {
+    if (data.startsWith("ab:")) {
+      const parts = data.split(":");
+      const token = parts[1];
+      const page = Number(parts[2]);
+      if (!Number.isInteger(page) || page < 0) {
+        return telegram("answerCallbackQuery", {
+          callback_query_id: query.id,
+          text: "صفحه درخواستی معتبر نیست."
+        });
+      }
+      return sendFreeAudiobookPageFromCallback(query, token, page);
+    }
     if (data.startsWith("cw:")) {
       const token = data.slice(3);
       const state = chatWebPages.get(token);
@@ -1899,6 +2083,21 @@ async function answerInlineQuery(query) {
       return answerVideoInlineQuery(query, text);
     }
 
+    // Web search is replaced by the free audiobook menu in chat.
+    return telegram("answerInlineQuery", {
+      inline_query_id: query.id,
+      cache_time: 1,
+      results: [{
+        type: "article",
+        id: "search-help",
+        title: "🎧 کتاب صوتی رایگان",
+        description: "برای جستجوی کتاب‌های رایگان، وارد ربات مرورگر شو و بخش کتاب صوتی رو انتخاب کن.",
+        input_message_content: {
+          message_text: "🎧 برای جستجوی کتاب‌های صوتی رایگان، وارد ربات مرورگر شو و بخش «کتاب صوتی» رو انتخاب کن."
+        }
+      }]
+    });
+
     // WEB SEARCH
     if (!text) {
       return telegram("answerInlineQuery", {
@@ -2031,7 +2230,6 @@ async function startBot() {
   await telegram("setMyCommands", {
     commands: [
       { command: "start", description: "نمایش منوی اصلی" },
-      { command: "web", description: "جست‌وجوی وب" },
       { command: "img", description: "جست‌وجوی عکس‌ها" },
       { command: "vid", description: "جست‌وجوی ویدئوها" },
       { command: "ai", description: "گفتگو با هوش مصنوعی" },
