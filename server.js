@@ -380,9 +380,18 @@ async function sendFootballFixtures(chatId, kind) {
       }
     }
 
-    fixtures.sort((a, b) =>
-      new Date(a.fixture?.date || 0).getTime() - new Date(b.fixture?.date || 0).getTime()
-    );
+    const liveCodes = new Set(["1H", "2H", "HT", "ET", "P", "LIVE", "INT", "BT"]);
+    const finishedCodes = new Set(["FT", "AET", "PEN"]);
+    fixtures.sort((a, b) => {
+      const aCode = a.fixture?.status?.short;
+      const bCode = b.fixture?.status?.short;
+      const aRank = liveCodes.has(aCode) ? 0 : finishedCodes.has(aCode) ? 2 : 1;
+      const bRank = liveCodes.has(bCode) ? 0 : finishedCodes.has(bCode) ? 2 : 1;
+      if (aRank !== bRank) return aRank - bRank;
+      const aTime = new Date(a.fixture?.date || 0).getTime();
+      const bTime = new Date(b.fixture?.date || 0).getTime();
+      return aRank === 2 ? bTime - aTime : aTime - bTime;
+    });
     const selected = fixtures.slice(0, 15);
     const body = selected.length
       ? selected.map((item, index) => (index + 1) + ". " + formatFootballFixture(item)).join("\n\n")
