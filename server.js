@@ -47,7 +47,7 @@ const CHAT_VIDEO_PAGE_SIZE = 6;
 const CHAT_WEB_PAGE_SIZE = 8;
 
 app.get("/", (req, res) => {
-  res.send("MoroorgarBot is running!");
+  res.send("MorvarBot is running!");
 });
 
 app.get("/health", (req, res) => {
@@ -92,7 +92,7 @@ async function showWelcome(chatId) {
   await telegram("sendMessage", {
     chat_id: chatId,
     text:
-      "👋 سلام! به ربات مور و گر خوش اومدی.\n\n" +
+      "👋 سلام! به ربات مرورگر خوش اومدی.\n\n" +
       "از منوی پایین نوع جست‌وجو رو انتخاب کن؛ بعد عبارتت رو بنویس تا نتایج همین‌جا نمایش داده بشن.",
     reply_markup: {
       keyboard: [
@@ -209,7 +209,7 @@ async function handleAiMessage(chatId, userId, userText) {
           {
             role: "system",
             content:
-              "You are Moroorgar's helpful assistant. Reply in the same language as the user, especially Persian when the user writes Persian. Be accurate, friendly, and concise. If you are unsure, say so."
+              "You are the AI assistant inside the Persian Telegram bot named «مرورگر» (MorvarBot). Your name is مرورگر. Never claim to be ChatGPT, OpenAI, Groq, or another provider/model. If asked who you are, say you are the AI assistant of مرورگر. Reply in the user's language, especially Persian when they write Persian. Be accurate, friendly, and concise. If unsure, say so."
           },
           ...nextHistory
         ],
@@ -948,7 +948,7 @@ async function extractArticle(url) {
     timeout: 20000,
     maxContentLength: 5 * 1024 * 1024,
     headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; MoroorgarBot/1.0)"
+      "User-Agent": "Mozilla/5.0 (compatible; MorvarBot/1.0)"
     }
   });
 
@@ -1415,7 +1415,7 @@ async function startBot() {
 }
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`MoroorgarBot running on port ${PORT}`);
+  console.log(`MorvarBot running on port ${PORT}`);
 
   startBot().catch(error => {
     console.error(
