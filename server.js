@@ -271,7 +271,7 @@ async function editPhotoForChat(chatId, styleKey) {
 
     const dimensions = await sharp(processedBuffer).metadata();
     const ratio = (dimensions.width || 1) / (dimensions.height || 1);
-    const longestSide = 768;
+    const longestSide = 512;
     const outputWidth = ratio >= 1 ? longestSide : Math.max(256, Math.round(longestSide * ratio));
     const outputHeight = ratio >= 1 ? Math.max(256, Math.round(longestSide / ratio)) : longestSide;
 
@@ -294,7 +294,9 @@ async function editPhotoForChat(chatId, styleKey) {
     if (!imageBase64) {
       throw new Error(result.data?.errors?.[0]?.message || "Cloudflare returned no edited image");
     }
-    const imageBuffer = Buffer.from(imageBase64, "base64");
+    const imageBuffer = await sharp(Buffer.from(imageBase64, "base64"))
+      .jpeg({ quality: 90 })
+      .toBuffer();
     const sendForm = new FormData();
     sendForm.append("chat_id", String(chatId));
     sendForm.append("caption", "🎨 نتیجه ویرایش عکس — " + style.label);
