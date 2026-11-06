@@ -25,6 +25,7 @@ const chatVideoPages = new Map();
 const aiModelByChat = new Map();
 const aiConversations = new Map();
 const pendingEditPhotos = new Map();
+const marketCategoryByChat = new Map();
 let marketPriceCache = { data: null, fetchedAt: 0 };
 
 const AI_MODELS = {
@@ -138,6 +139,7 @@ async function showMarketMenu(chatId) {
 
 async function showMarketPrices(chatId, category = "all") {
   chatModes.set(chatId, "market");
+  marketCategoryByChat.set(chatId, category);
   const categoryTitles = {
     crypto: "₿ قیمت رمزارزها",
     currency: "💱 قیمت ارزهای خارجی",
@@ -771,7 +773,7 @@ async function processChatMessage(message) {
   if (command === "/img") return selectChatMode(chatId, "image");
   if (command === "/vid") return selectChatMode(chatId, "video");
   if (command === "/ai") return showAiMenu(chatId);
-  if (command === "/prices") return showMarketPrices(chatId);
+  if (command === "/prices") return showMarketMenu(chatId);
   if (command === "/gemini-test") {
     const testText = text.replace(/^\/gemini-test(?:@\w+)?\s*/i, "").trim() ||
       "سلام. لطفاً در یک جمله خودت را معرفی کن.";
@@ -789,7 +791,7 @@ async function processChatMessage(message) {
   if (text === "🪙 طلا و سکه") return showMarketPrices(chatId, "gold");
   if (text === "🔄 به‌روزرسانی همین بخش") {
     const current = chatModes.get(chatId);
-    return showMarketPrices(chatId, current === "market" ? "currency" : "currency");
+    return showMarketPrices(chatId, marketCategoryByChat.get(chatId) || "currency");
   }
   if (text === "🔙 منوی اصلی") {
     pendingEditPhotos.delete(chatId);
