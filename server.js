@@ -1054,11 +1054,15 @@ async function sendChatVideoPage(token, existingData = null) {
       title: v.title || "Video", duration: v.duration,
       url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : "", sourceUrl: "", direct: false
     })),
-    await Promise.all(data.thirdData.results.slice(0, CHAT_VIDEO_PAGE_SIZE * 2).map(async v => ({
-      title: v.name || "PeerTube video",
-      duration: v.duration ? `${Math.floor(v.duration/60)}:${String(v.duration%60).padStart(2,"0")}` : "",
-      url: await resolvePeerTubeMp4(v), sourceUrl: v.url || "", direct: true
-    })))
+    await Promise.all(data.thirdData.results.slice(0, CHAT_VIDEO_PAGE_SIZE * 2).map(async v => {
+      const directUrl = await resolvePeerTubeMp4(v);
+      return {
+        title: v.name || "PeerTube video",
+        duration: v.duration ? `${Math.floor(v.duration/60)}:${String(v.duration%60).padStart(2,"0")}` : "",
+        url: directUrl || v.embedUrl || v.url || "",
+        sourceUrl: v.url || "", direct: Boolean(directUrl)
+      };
+    }))
   ).filter(v => /^https?:\/\//i.test(v.url || "")).slice(0, CHAT_VIDEO_PAGE_SIZE * 2);
 
   if (!videos.length) {
