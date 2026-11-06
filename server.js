@@ -1057,7 +1057,7 @@ async function sendChatVideoPage(token, existingData = null) {
     data.secondData.results.map(v => ({
       title: v.title || "Video", duration: v.duration,
       url: v.id ? `https://adultembed.com/player/embed/${v.id}/` : "",
-      thumbnail: v.thumbnail || "", sourceUrl: "", direct: false
+      thumbnail: v.thumbnail || "", sourceUrl: "", direct: false, adult: true
     })),
     await Promise.all(data.thirdData.results.slice(0, CHAT_VIDEO_PAGE_SIZE * 2).map(async v => {
       const directUrl = await resolvePeerTubeMp4(v);
@@ -1094,6 +1094,7 @@ async function sendChatVideoPage(token, existingData = null) {
       if (/^https?:\/\//i.test(v.thumbnail || "")) {
         await telegram("sendPhoto",{
           chat_id:state.chatId,photo:v.thumbnail,caption,
+          has_spoiler: Boolean(v.adult),
           reply_markup:{inline_keyboard:buttons}
         });
       } else {
