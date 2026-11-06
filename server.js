@@ -159,7 +159,7 @@ async function selectAiModel(chatId, modelKey) {
     chat_id: chatId,
     text:
       "✅ مدل انتخاب شد: " + selected.label + "\n\n" +
-      "حالا سؤالت رو بفرست تا همین‌جا جواب بگیری.\n" +
+      "حالا سؤالت رو بفرست تا همین‌جا جواب بگیری.",
     reply_markup: {
       keyboard: [
         [{ text: "🔄 تغییر مدل" }, { text: "🆕 گفتگوی جدید" }],
